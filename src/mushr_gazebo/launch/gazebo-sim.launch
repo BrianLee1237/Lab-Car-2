@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- ensure workspace python modules (gazebo_msgs, gazebo_ros, ...) are importable
+       even if the shell's PYTHONPATH is missing the devel space -->
+  <env name="PYTHONPATH"
+       value="/Users/tarunjaikumar/Documents/Robotics-UCSD/ERL-Racecar/catkin_ws/devel/lib/python3.6/site-packages:$(optenv PYTHONPATH)"/>
+  <env name="GAZEBO_PLUGIN_PATH"
+       value="/Users/tarunjaikumar/Documents/Robotics-UCSD/ERL-Racecar/catkin_ws/devel/lib:$(optenv GAZEBO_PLUGIN_PATH)"/>
+
+  <param name="/use_sim_time" value="false"/>
+
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find pedsim_gazebo_plugin)/worlds/eng_hall.world"/>
+  </include>
+	
+  <node pkg="pedsim_gazebo_plugin" type="spawn_pedsim_agents.py" name="spawn_pedsim_agents"  output="screen">
+   </node>
+
+  <!-- pedsim_simulator publishes /pedsim_simulator/simulated_agents, which
+       spawn_pedsim_agents.py listens on to spawn the people in gazebo.
+       Without it, no agents ever appear. -->
+  <include file="$(find pedsim_simulator)/launch/simulator.launch">
+    <arg name="scene_file" value="$(find pedsim_simulator)/scenarios/eng_hall.xml"/>
+    <arg name="with_robot" value="false"/>
+    <arg name="update_rate" value="55.0"/>
+    <arg name="simulation_factor" value="1.0"/>
+  </include>
+
+	<param name="robot_description" command="cat $(find mushr_description)/urdf/racecar.urdf"/>
+
+
+  <node name="spawn_robot" pkg="gazebo_ros" type="spawn_model"
+      args="-urdf -param robot_description -model mushr -x 3 -y 3 -z 0"
+      output="screen" respawn="false"
+      launch-prefix="bash -c 'sleep 3; $0 $@'"/>
+
+  <node name="joint_state_publisher" pkg="joint_state_publisher"
+      type="joint_state_publisher" output="screen"/>
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+      type="robot_state_publisher" output="screen"
+      launch-prefix="bash -c 'sleep 1; $0 $@'"/>
+
+ <!-- <node name="rviz" pkg="rviz" type="rviz"
+	args="-d $(find mushr_gazebo)/rviz/mushr.rviz" output="screen"
+	launch-prefix="bash -c 'sleep 4; $0 $@'"/> -->
+</launch>

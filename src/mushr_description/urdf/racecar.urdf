@@ -1,0 +1,362 @@
+<?xml version="1.0" ?>
+<robot name="mushr_tx2">
+  <material name="red"><color rgba="1 0 0 1"/></material>
+  <material name="orange"><color rgba="1 0.55 0 1"/></material>
+  <material name="yellow"><color rgba="1 1 0 1"/></material>
+  <material name="green"><color rgba="0 1 0 1"/></material>
+  <material name="blue"><color rgba="0 0 1 1"/></material>
+  <material name="purple"><color rgba="0.6 0.2 0.6 1"/></material>
+  <material name="white"><color rgba="1 1 1 1"/></material>
+  <material name="black"><color rgba="0 0 0 1"/></material>
+  <material name="gold"><color rgba="1 0.84 0 1"/></material>
+  <material name="teal"><color rgba="0 0.8 0.8 1"/></material>
+  <material name="none"><color rgba="0 0 0 1"/></material>
+  <material name="aluminum"><color rgba="0.5 0.5 0.5 1"/></material>
+  <material name="plastic"><color rgba="0.1 0.1 0.1 1"/></material>
+
+  <link name="base_footprint">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
+  </link>
+
+  <link name="base_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="3.0"/>
+      <inertia ixx="0.015725" ixy="0" ixz="0" iyy="0.033125" iyz="0" izz="0.043850"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="package://mushr_description/meshes/base/tx2/mushr_base_tx2.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="package://mushr_description/meshes/base/tx2/mushr_base_tx2_collision.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="platform_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.2"/>
+      <inertia ixx="0.000667" ixy="0" ixz="0" iyy="0.001500" iyz="0" izz="0.002167"/>
+    </inertial>
+  </link>
+
+  <link name="insets_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
+  </link>
+
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.094655"/>
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+  </joint>
+
+  <joint name="base_link_to_platform_link" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.0"/>
+    <parent link="base_link"/>
+    <child link="platform_link"/>
+  </joint>
+
+  <joint name="base_link_to_insets_link" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.0"/>
+    <parent link="base_link"/>
+    <child link="insets_link"/>
+  </joint>
+
+  <!-- FRONT LEFT WHEEL -->
+  <link name="front_left/wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.000070" ixy="0" ixz="0" iyy="0.000125" iyz="0" izz="0.000070"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 3.141592" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="package://mushr_description/meshes/base/mushr_wheel.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.043"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- FRONT RIGHT WHEEL -->
+  <link name="front_right/wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.000070" ixy="0" ixz="0" iyy="0.000125" iyz="0" izz="0.000070"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="package://mushr_description/meshes/base/mushr_wheel.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.043"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- BACK LEFT WHEEL -->
+  <link name="back_left/wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.000070" ixy="0" ixz="0" iyy="0.000125" iyz="0" izz="0.000070"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 3.141592" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="package://mushr_description/meshes/base/mushr_wheel.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.043"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- BACK RIGHT WHEEL -->
+  <link name="back_right/wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.000070" ixy="0" ixz="0" iyy="0.000125" iyz="0" izz="0.000070"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="package://mushr_description/meshes/base/mushr_wheel.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.043"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- WHEEL FRICTION PROPERTIES -->
+  <gazebo reference="back_left/wheel_link">
+    <mu1>2</mu1>
+    <mu2>15</mu2>
+    <kp>10000000.0</kp>
+    <kd>1.0</kd>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <gazebo reference="back_right/wheel_link">
+    <mu1>2</mu1>
+    <mu2>15</mu2>
+    <kp>10000000.0</kp>
+    <kd>1.0</kd>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <gazebo reference="front_left/wheel_link">
+    <mu1>2</mu1>
+    <mu2>15</mu2>
+    <kp>10000000.0</kp>
+    <kd>1.0</kd>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <gazebo reference="front_right/wheel_link">
+    <mu1>2</mu1>
+    <mu2>15</mu2>
+    <kp>10000000.0</kp>
+    <kd>1.0</kd>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <!-- CAMERA -->
+  <joint name="camera_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.10075 0.0 0.165"/>
+    <parent link="base_link"/>
+    <child link="camera_bottom_screw_frame"/>
+  </joint>
+
+  <link name="camera_bottom_screw_frame"/>
+
+  <joint name="camera_link_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="camera_bottom_screw_frame"/>
+    <child link="camera_link"/>
+  </joint>
+
+  <link name="camera_link">
+    <visual>
+      <origin rpy="1.5707963267948966 0 1.5707963267948966" xyz="0.0043 -0.0175 0"/>
+      <geometry>
+        <mesh filename="package://mushr_description/meshes/realsense2/d435.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.072"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.000008" ixy="0.0" ixz="0.0" iyy="0.000052" iyz="0.0" izz="0.000052"/>
+    </inertial>
+  </link>
+
+  <joint name="camera_optical_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+    <parent link="camera_link"/>
+    <child link="camera_link_optical"/>
+  </joint>
+
+  <link name="camera_link_optical"/>
+
+  <!-- STEERING LINKS -->
+  <link name="front_left/wheel_steer_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.01"/>
+      <inertia ixx="1e-05" iyy="1e-05" izz="1e-05" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <link name="front_right/wheel_steer_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.01"/>
+      <inertia ixx="1e-05" iyy="1e-05" izz="1e-05" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- STEERING JOINTS -->
+  <joint name="front_left_wheel_steer" type="revolute">
+    <axis xyz="0 0 1"/>
+    <limit effort="10.0" lower="-0.6" upper="0.6" velocity="2.0"/>
+    <origin rpy="0 0 0" xyz="0.1385 0.115 -0.045855"/>
+    <parent link="base_link"/>
+    <child link="front_left/wheel_steer_link"/>
+  </joint>
+
+  <joint name="front_right_wheel_steer" type="revolute">
+    <axis xyz="0 0 1"/>
+    <limit effort="10.0" lower="-0.6" upper="0.6" velocity="2.0"/>
+    <origin rpy="0 0 0" xyz="0.1385 -0.115 -0.045855"/>
+    <parent link="base_link"/>
+    <child link="front_right/wheel_steer_link"/>
+  </joint>
+
+  <!-- DRIVE JOINTS -->
+  <joint name="front_left_wheel_throttle" type="continuous">
+    <axis xyz="0 1 0"/>
+    <limit effort="10.0" velocity="100.0"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="front_left/wheel_steer_link"/>
+    <child link="front_left/wheel_link"/>
+  </joint>
+
+  <joint name="front_right_wheel_throttle" type="continuous">
+    <axis xyz="0 1 0"/>
+    <limit effort="10.0" velocity="100.0"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="front_right/wheel_steer_link"/>
+    <child link="front_right/wheel_link"/>
+  </joint>
+
+  <joint name="back_left_wheel_throttle" type="continuous">
+    <axis xyz="0 1 0"/>
+    <limit effort="10.0" velocity="100.0"/>
+    <origin rpy="0 0 0" xyz="-0.158 0.115 -0.045855"/>
+    <parent link="base_link"/>
+    <child link="back_left/wheel_link"/>
+  </joint>
+
+  <joint name="back_right_wheel_throttle" type="continuous">
+    <axis xyz="0 1 0"/>
+    <limit effort="10.0" velocity="100.0"/>
+    <origin rpy="0 0 0" xyz="-0.158 -0.115 -0.045855"/>
+    <parent link="base_link"/>
+    <child link="back_right/wheel_link"/>
+  </joint>
+
+  <!-- CAMERA SENSOR -->
+  <gazebo reference="camera_link">
+    <sensor type="depth" name="realsense_depth">
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+      <camera>
+        <horizontal_fov>1.4</horizontal_fov>
+        <image>
+          <width>424</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.1</near>
+          <far>10.0</far>
+        </clip>
+      </camera>
+      <plugin name="camera_controller" filename="libgazebo_ros_openni_kinect.so">
+        <alwaysOn>true</alwaysOn>
+        <updateRate>15</updateRate>
+        <cameraName>camera</cameraName>
+        <frameName>camera_link_optical</frameName>
+        <imageTopicName>/camera/color/image_raw</imageTopicName>
+        <depthImageTopicName>/camera/depth/image_rect_raw</depthImageTopicName>
+        <pointCloudTopicName>/camera/depth/points</pointCloudTopicName>
+        <cameraInfoTopicName>/camera/color/camera_info</cameraInfoTopicName>
+        <depthImageCameraInfoTopicName>/camera/depth/camera_info</depthImageCameraInfoTopicName>
+        <pointCloudCutoff>0.1</pointCloudCutoff>
+        <hackBaseline>0.07</hackBaseline>
+        <distortionK1>0.0</distortionK1>
+        <distortionK2>0.0</distortionK2>
+        <distortionK3>0.0</distortionK3>
+        <distortionT1>0.0</distortionT1>
+        <distortionT2>0.0</distortionT2>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- DRIVE PLUGIN -->
+  <gazebo>
+    <plugin name="mushr_ackermann_drive" filename="libmushr_ackermann_plugin.dylib">
+      <left_front_joint>front_left_wheel_throttle</left_front_joint>
+      <right_front_joint>front_right_wheel_throttle</right_front_joint>
+      <left_rear_joint>back_left_wheel_throttle</left_rear_joint>
+      <right_rear_joint>back_right_wheel_throttle</right_rear_joint>
+      <left_steering_joint>front_left_wheel_steer</left_steering_joint>
+      <right_steering_joint>front_right_wheel_steer</right_steering_joint>
+      <wheelbase>0.2965</wheelbase>
+      <wheel_separation>0.230</wheel_separation>
+      <wheel_radius>0.050</wheel_radius>
+      <kp>20.0</kp>
+      <ki>0.0</ki>
+      <kd>0.0</kd>
+    </plugin>
+  </gazebo>
+
+</robot>

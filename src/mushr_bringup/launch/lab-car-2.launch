@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<launch>
+    <!--include the physical constants yaml-->
+    <rosparam file="$(find mushr_bringup)/config/physical_constants.yaml" command="load" />
+    <!--launch vesc driver-->
+    <node name="vesc_driver" pkg="vesc_driver" type="vesc_driver_node" output="screen">
+        <param name="port" value="/dev/vesc" />
+        <param name="servo_min" value="0.05" />
+        <param name="servo_max" value="0.95" />
+    </node>
+    <!--launch the ackermann to vesc and vesc to odom-->
+     <include file="$(find vesc_ackermann)/launch/ackermann_to_vesc_node.launch" />
+     <include file="$(find vesc_ackermann)/launch/vesc_to_odom_node.launch" />
+    <!--launch realsense-->
+     <include file="$(find realsense2_camera)/launch/rs_camera.launch" />
+    <!--keyboard_teleop_node needs a real terminal for stdin, so run it separately:
+        rosrun mushr_bringup keyboard_teleop_node-->
+
+</launch>

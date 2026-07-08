@@ -1,0 +1,5 @@
+build/
+devel/
+.DS_Store
+*.pyc
+.catkin_workspace

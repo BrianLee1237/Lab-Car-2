@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Mac",
+            "includePath": [
+                "/opt/anaconda3/envs/ROS/include/**",
+                "/usr/include/**",
+                "/opt/anaconda3/envs/ROS/share/**",
+                "/opt/anaconda3/envs/ROS/include/gazebo-11/**"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/clang",
+            "cStandard": "c17",
+            "cppStandard": "c++14",
+            "intelliSenseMode": "macos-clang-arm64"
+        }
+    ],
+    "version": 4
+}
