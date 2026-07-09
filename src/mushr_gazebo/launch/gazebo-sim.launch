@@ -1,11 +1,9 @@
 <?xml version="1.0"?>
 <launch>
-  <!-- ensure workspace python modules (gazebo_msgs, gazebo_ros, ...) are importable
-       even if the shell's PYTHONPATH is missing the devel space -->
   <env name="PYTHONPATH"
-       value="/Users/tarunjaikumar/Documents/Robotics-UCSD/ERL-Racecar/catkin_ws/devel/lib/python3.6/site-packages:$(optenv PYTHONPATH)"/>
+       value="$(find mushr_gazebo)/../../devel/lib/python3.6/site-packages:$(optenv PYTHONPATH)"/>
   <env name="GAZEBO_PLUGIN_PATH"
-       value="/Users/tarunjaikumar/Documents/Robotics-UCSD/ERL-Racecar/catkin_ws/devel/lib:$(optenv GAZEBO_PLUGIN_PATH)"/>
+       value="$(find mushr_gazebo)/../../devel/lib:$(optenv GAZEBO_PLUGIN_PATH)"/>
 
   <param name="/use_sim_time" value="false"/>
 
