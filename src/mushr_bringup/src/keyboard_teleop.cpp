@@ -40,20 +40,29 @@ namespace KeyboardTeleop{
     void keyboard_teleop::run(){
         ros::Rate loop_rate(30);
         bool quit=false;
+        int idle_cycles=0; // loop cycles since the last key arrived
         while(ros::ok()){
             char c;
+            bool key_seen=false;
             while(read(STDIN_FILENO, &c, 1) > 0){
                 switch(c){
                     case 3: // Ctrl+C arrives as a byte since ISIG is off
                     case 'q': speed=0.0;steering=0.0;quit=true;break;
-                    case 'w': speed+=0.05; break;
-                    case 's': speed-=0.05; break;
-                    case 'a': steering+=0.02; break;
-                    case 'd': steering-=0.02; break;
-                    case ' ': speed=0.0; break;
-                    case 'x': steering=0.0; break;
-                    
+                    case 'w': speed=drive_speed; key_seen=true; break;
+                    case 's': speed=-drive_speed; key_seen=true; break;
+                    case 'a': steering=turn_angle; key_seen=true; break;
+                    case 'd': steering=-turn_angle; key_seen=true; break;
+                    case ' ': speed=0.0;steering=0.0; break;
+
                 }
+            }
+
+            // videogame-style: keys auto-repeat while held; once they stop
+            // arriving for longer than the OS auto-repeat delay, coast to a stop
+            if(key_seen) idle_cycles=0;
+            else if(++idle_cycles > key_timeout_cycles){
+                speed=0.0;
+                steering=0.0;
             }
 
             ackermann_msgs::AckermannDriveStamped msg;
