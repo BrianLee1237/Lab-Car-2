@@ -4,7 +4,7 @@
     <rosparam file="$(find mushr_bringup)/config/physical_constants.yaml" command="load" />
     <!--launch vesc driver-->
     <node name="vesc_driver" pkg="vesc_driver" type="vesc_driver_node" output="screen">
-        <param name="port" value="/dev/vesc" />
+        <param name="port" value="/dev/ttyACMO" />
         <param name="servo_min" value="0.05" />
         <param name="servo_max" value="0.95" />
     </node>

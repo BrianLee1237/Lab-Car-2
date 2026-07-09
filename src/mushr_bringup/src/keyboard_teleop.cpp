@@ -66,7 +66,7 @@ namespace KeyboardTeleop{
             ackermann_pub.publish(msg);
 
             if(quit){
-                ros::Duration(0.1).sleep(); // let the stop command flush before shutting down
+                ros::Duration(0.1).sleep(); 
                 ros::shutdown();
                 break;
             }
