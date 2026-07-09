@@ -21,7 +21,7 @@ namespace KeyboardTeleop{
             void enableRawMode();
             void disableRawMode();
             float speed=0.0;
-            float steering=0.5;
+            float steering=0.0;
             termios orig_termios;
             // ack_command_publisher = nh.advertise< /*msg_type*/>("ackermann_cmd", 10);
             // ros::ros::Subscriber keyboard_input;
