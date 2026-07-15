@@ -343,7 +343,7 @@
 
   <!-- DRIVE PLUGIN -->
   <gazebo>
-    <plugin name="mushr_ackermann_drive" filename="libmushr_ackermann_plugin.dylib">
+    <plugin name="mushr_ackermann_drive" filename="libmushr_gazebo.dylib">
       <left_front_joint>front_left_wheel_throttle</left_front_joint>
       <right_front_joint>front_right_wheel_throttle</right_front_joint>
       <left_rear_joint>back_left_wheel_throttle</left_rear_joint>
@@ -353,6 +353,7 @@
       <wheelbase>0.2965</wheelbase>
       <wheel_separation>0.230</wheel_separation>
       <wheel_radius>0.050</wheel_radius>
+      <max_torque>10.0</max_torque>
       <kp>20.0</kp>
       <ki>0.0</ki>
       <kd>0.0</kd>

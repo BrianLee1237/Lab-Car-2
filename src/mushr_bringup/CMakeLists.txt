@@ -154,6 +154,8 @@ add_executable(keyboard_teleop_node src/keyboard_teleop.cpp src/keyboard_teleop_
 # target_link_libraries(${PROJECT_NAME}_node
 #   ${catkin_LIBRARIES}
 # )
+
+add_dependencies(keyboard_teleop_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(keyboard_teleop_node
   ${catkin_LIBRARIES}
 )
