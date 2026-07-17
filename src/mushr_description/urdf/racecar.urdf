@@ -360,4 +360,63 @@
     </plugin>
   </gazebo>
 
+  <joint name="laser_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.03975 0.0 0.180"/>
+    <parent link="base_link"/>
+    <child link="laser"/>
+  </joint>
+
+  <link name="laser">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0.0474"/>
+      <geometry>
+        <box size="0.05 0.05 0.07"/>
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.010 0.010 0.010"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <!-- mass + inertia sourced directly from robotnik_sensors hokuyo_ust10lx.urdf.xacro -->
+      <origin rpy="0 0 0" xyz="0.0 0 0.035"/>
+      <mass value="0.130"/>
+      <!-- solid cuboid inertia, w=0.05 h=0.05 d=0.07, m=0.130 -->
+      <inertia ixx="0.0000817" ixy="0.0" ixz="0.0" iyy="0.0000817" iyz="0.0" izz="0.0000542"/>
+    </inertial>
+  </link>
+
+  <!-- LIDAR SENSOR PLUGIN (Gazebo) -->
+  <!-- Specs: 270 deg FOV, 0.06-10m range, 40Hz, 0.25 deg resolution, 1081 samples -->
+  <!-- Matches urg_node's real frame_id: "laser", confirmed via rostopic echo /scan -->
+  <gazebo reference="laser">
+    <sensor type="ray" name="laser_sensor">
+      <pose>0 0 0 0 0 0</pose>
+      <visualize>true</visualize>
+      <update_rate>40</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>1081</samples>
+            <resolution>1</resolution>
+            <min_angle>-2.35</min_angle>
+            <max_angle>2.35</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.06</min>
+          <max>10.0</max>
+          <resolution>0.004359297</resolution>
+        </range>
+      </ray>
+      <plugin name="laser_plugin" filename="libgazebo_ros_laser.so">
+        <topicName>/scan</topicName>
+        <frameName>laser</frameName>
+      </plugin>
+    </sensor>
+  </gazebo>
+
 </robot>

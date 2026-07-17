@@ -40,7 +40,7 @@
       type="robot_state_publisher" output="screen"
       launch-prefix="bash -c 'sleep 1; $0 $@'"/>
 
- <!-- <node name="rviz" pkg="rviz" type="rviz"
+ <node name="rviz" pkg="rviz" type="rviz"
 	args="-d $(find mushr_gazebo)/rviz/mushr.rviz" output="screen"
-	launch-prefix="bash -c 'sleep 4; $0 $@'"/> -->
+	launch-prefix="bash -c 'sleep 4; $0 $@'"/> 
 </launch>
