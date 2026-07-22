@@ -16,4 +16,8 @@
     <!--keyboard_teleop_node needs a real terminal for stdin, so run it separately:
         rosrun mushr_bringup keyboard_teleop_node-->
 
+    <!--gamecontroller teleop reads the DS4 (via ds4drv on /dev/input/js0); no
+        terminal needed, so it can launch here. Requires ds4drv running.-->
+    <node name="gamecontroller_teleop" pkg="mushr_bringup" type="gamecontroller_teleop_node" output="screen"/>
+
 </launch>
