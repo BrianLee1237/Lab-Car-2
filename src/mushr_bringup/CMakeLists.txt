@@ -17,6 +17,8 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
 )
 
+find_package(SDL2 REQUIRED)
+
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 
@@ -122,6 +124,7 @@ catkin_package(
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
+  ${SDL2_INCLUDE_DIRS}
 )
 
 ## Declare a C++ library
@@ -158,6 +161,13 @@ add_executable(keyboard_teleop_node src/keyboard_teleop.cpp src/keyboard_teleop_
 add_dependencies(keyboard_teleop_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(keyboard_teleop_node
   ${catkin_LIBRARIES}
+)
+
+add_executable(gamecontroller_teleop_node src/gamecontroller_teleop.cpp src/gamecontroller_teleop_node.cpp)
+add_dependencies(gamecontroller_teleop_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(gamecontroller_teleop_node
+  ${catkin_LIBRARIES}
+  SDL2::SDL2
 )
 
 #############
