@@ -11,9 +11,9 @@
 namespace GameControllerTeleop{
 
     gamecontroller_teleop::gamecontroller_teleop(ros::NodeHandle nh){
-        SDL_Init(SDL_INIT_GAMECONTROLLER);
+        SDL_Init(SDL_INIT_JOYSTICK);
         if(SDL_NumJoysticks()>0){
-            controller=SDL_GameControllerOpen(0);
+            controller=SDL_JoystickOpen(0);
         }
         ackermann_pub=nh.advertise<ackermann_msgs::AckermannDriveStamped>("/ackermann_cmd", 10);
     }
@@ -25,15 +25,16 @@ namespace GameControllerTeleop{
         const float deadzone=0.1f;
 
         while(ros::ok()){
-            SDL_GameControllerUpdate();
+            SDL_JoystickUpdate();
 
-            if(!controller || !SDL_GameControllerGetAttached(controller)){
-                if(controller){ SDL_GameControllerClose(controller); controller=nullptr; }
-                if(SDL_NumJoysticks()>0) controller=SDL_GameControllerOpen(0);
+            if(!controller || !SDL_JoystickGetAttached(controller)){
+                if(controller){ SDL_JoystickClose(controller); controller=nullptr; }
+                if(SDL_NumJoysticks()>0) controller=SDL_JoystickOpen(0);
+                if(!controller) ROS_WARN_THROTTLE(5.0, "no joystick found");
             }
 
-            int16_t rawSpeed   = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
-            int16_t rawSteer   = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
+            int16_t rawSteer   = SDL_JoystickGetAxis(controller, 0);
+            int16_t rawSpeed   = SDL_JoystickGetAxis(controller, 1);
 
             speed=-rawSpeed/32768.0f;
             steering=rawSteer/32768.0f;
