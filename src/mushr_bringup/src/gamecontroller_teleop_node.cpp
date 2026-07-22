@@ -1,0 +1,19 @@
+#include <ros/ros.h>
+#include <gamecontroller_teleop.h>
+#include <ackermann_msgs/AckermannDriveStamped.h>
+#include <stdlib.h>
+#include <termios.h>
+#include <unistd.h>
+#include <algorithm>
+
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, "game_controller_node");
+  ros::NodeHandle nh;
+
+  GAMECONTROLLER_TELEOP::GameControllerTeleop controller_based_teleop(nh);
+  controller_based_teleop.run();
+
+  return 0;
+}
