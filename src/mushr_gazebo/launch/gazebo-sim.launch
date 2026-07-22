@@ -5,7 +5,7 @@
   <env name="GAZEBO_PLUGIN_PATH"
        value="$(find mushr_gazebo)/../../devel/lib:$(optenv GAZEBO_PLUGIN_PATH)"/>
 
-  <param name="/use_sim_time" value="false"/>
+  <param name="/use_sim_time" value="true"/>
 
 
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
@@ -43,4 +43,12 @@
  <node name="rviz" pkg="rviz" type="rviz"
 	args="-d $(find mushr_gazebo)/rviz/mushr.rviz" output="screen"
 	launch-prefix="bash -c 'sleep 4; $0 $@'"/> 
+  <node pkg="mushr_gazebo" type="lidar_conversion" name="lidar_conversion" output="screen"/>
+
+  <!-- Publishes tf map -> base_footprint from gazebo ground truth, giving the
+       tf tree a "map" frame. Required by mapping_node's lookupTransform("map", "laser"). -->
+  <node pkg="mushr_gazebo" type="ground_truth.py" name="ground_truth" output="screen"/>
+
+  <node pkg="mushr_gazebo" type="mapping_node" name="mapping_node" output="screen"/>
+  <param name="/use_sim_time" value="true"/>
 </launch>
