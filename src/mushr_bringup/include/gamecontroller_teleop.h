@@ -19,7 +19,7 @@ namespace GameControllerTeleop{
             float speed=0.0;           
             float steering=0.0;
     
-            SDL_GameController* controller = nullptr;
+            SDL_Joystick* controller = nullptr;
     };
 }
 
