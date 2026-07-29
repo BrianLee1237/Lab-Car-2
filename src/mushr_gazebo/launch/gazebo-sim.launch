@@ -49,6 +49,8 @@
        tf tree a "map" frame. Required by mapping_node's lookupTransform("map", "laser"). -->
   <node pkg="mushr_gazebo" type="ground_truth.py" name="ground_truth" output="screen"/>
 
+  <node name="gamecontroller_teleop" pkg="mushr_gazebo" type="gazebo_gamecontroller_teleop" output="screen"/>
+
   <node pkg="mushr_gazebo" type="mapping_node" name="mapping_node" output="screen"/>
   <param name="/use_sim_time" value="true"/>
 </launch>

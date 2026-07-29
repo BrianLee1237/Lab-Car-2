@@ -14,6 +14,8 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(Eigen3 REQUIRED)
 
+find_package(SDL2 REQUIRED)
+
 find_package(gazebo REQUIRED)
 
 find_package(octomap REQUIRED)
@@ -42,6 +44,14 @@ add_executable(gazebo_keyboard_teleop src/keyboard_teleop.cpp src/keyboard_teleo
 add_dependencies(gazebo_keyboard_teleop ${catkin_EXPORTED_TARGETS})
 target_link_libraries(gazebo_keyboard_teleop
   ${catkin_LIBRARIES}
+)
+
+
+add_executable(gazebo_gamecontroller_teleop src/gamecontroller_teleop.cpp src/gamecontroller_teleop_node.cpp)
+add_dependencies(gazebo_gamecontroller_teleop ${catkin_EXPORTED_TARGETS})
+target_link_libraries(gazebo_gamecontroller_teleop
+  ${catkin_LIBRARIES}
+  SDL2::SDL2
 )
 
 add_executable(lidar_conversion src/convert_lidar_format.cpp)

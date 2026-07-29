@@ -2,7 +2,7 @@
 #define GAMECONTROLLER_TELEOP
 
 #include <ros/ros.h>
-#include <ackermann_msgs/AckermannDriveStamped.h>
+#include <ackermann_msgs/AckermannDrive.h>
 #include <stdlib.h>
 #include <SDL2/SDL.h>
 
