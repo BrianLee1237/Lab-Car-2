@@ -8,7 +8,7 @@ We use a variation of the [Mushr Robot](https://mushr.io), which houses a Lidar(
 
 ### Clone the repository
 ```bash
-git clone [<repo-url>](https://github.com/tarunja1ks/Lab-Car-2/)
+git clone https://github.com/tarunja1ks/Lab-Car-2/
 cd Lab-Car-2
 ```
 
