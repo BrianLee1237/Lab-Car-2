@@ -38,6 +38,7 @@
 
 #include <realtime_tools/realtime_clock.h>
 #include <chrono>
+#include <mutex>
 
 namespace realtime_tools
 {
