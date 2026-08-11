@@ -1,10 +1,12 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python2
 # Publishes gazebo ground-truth pose as /ground_truth_pose (Pose2D) and, more
 # importantly, broadcasts tf map -> base_footprint so the tf tree has a "map"
 # frame for mapping_node / rviz.
 #
 # NOTE: deliberately avoids `tf2_ros` and `tf.transformations` -- those import
-# native PyKDL/tf2 bindings that segfault (exit -11) in this conda ROS env.
+# native PyKDL/tf2 bindings that segfaulted (exit -11) under a conda ROS env
+# this was originally developed against; kept for portability since this
+# script needs nothing from them anyway.
 # We publish the transform directly to /tf (exactly what a broadcaster does)
 # and compute the yaw quaternion with plain math.
 import math

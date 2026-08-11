@@ -10,6 +10,8 @@ find_package(catkin REQUIRED COMPONENTS
   laser_geometry
   octomap_msgs
   visualization_msgs
+  std_msgs
+  message_generation
 )
 
 find_package(Eigen3 REQUIRED)
@@ -19,12 +21,23 @@ find_package(SDL2 REQUIRED)
 find_package(gazebo REQUIRED)
 
 find_package(octomap REQUIRED)
+find_package(dynamicEDT3D REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${GAZEBO_CXX_FLAGS}")
+
+add_service_files(
+  FILES
+  GetDistanceGradient.srv
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
 
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES mushr_gazebo
- CATKIN_DEPENDS ackermann_msgs gazebo_msgs gazebo_ros roscpp rospy
+ CATKIN_DEPENDS ackermann_msgs gazebo_msgs gazebo_ros roscpp rospy message_runtime
 )
 
 include_directories(
@@ -33,6 +46,8 @@ include_directories(
   ${GAZEBO_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
   ${OCTOMAP_INCLUDE_DIRS}
+  ${DYNAMICEDT3D_INCLUDE_DIRS}
+  ${SDL2_INCLUDE_DIRS}
 )
 
 
@@ -51,7 +66,7 @@ add_executable(gazebo_gamecontroller_teleop src/gamecontroller_teleop.cpp src/ga
 add_dependencies(gazebo_gamecontroller_teleop ${catkin_EXPORTED_TARGETS})
 target_link_libraries(gazebo_gamecontroller_teleop
   ${catkin_LIBRARIES}
-  SDL2::SDL2
+  ${SDL2_LIBRARIES}
 )
 
 add_executable(lidar_conversion src/convert_lidar_format.cpp)
@@ -61,6 +76,10 @@ target_link_libraries(lidar_conversion ${catkin_LIBRARIES} Eigen3::Eigen )
 add_executable(mapping_node src/mapping_node.cpp)
 add_dependencies(mapping_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(mapping_node ${catkin_LIBRARIES} ${OCTOMAP_LIBRARIES})
+
+add_executable(esdf_node src/esdf_node.cpp)
+add_dependencies(esdf_node ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
+target_link_libraries(esdf_node ${catkin_LIBRARIES} ${OCTOMAP_LIBRARIES} ${DYNAMICEDT3D_LIBRARIES})
 
 
 

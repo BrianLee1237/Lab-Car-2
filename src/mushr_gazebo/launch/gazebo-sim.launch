@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
 <launch>
+  <arg name="gui" default="true"/>
+
   <env name="PYTHONPATH"
        value="$(find mushr_gazebo)/../../devel/lib/python3.6/site-packages:$(optenv PYTHONPATH)"/>
   <env name="GAZEBO_PLUGIN_PATH"
@@ -10,8 +12,9 @@
 
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
     <arg name="world_name" value="$(find pedsim_gazebo_plugin)/worlds/eng_hall.world"/>
+    <arg name="gui" value="$(arg gui)"/>
   </include>
-	
+
   <node pkg="pedsim_gazebo_plugin" type="spawn_pedsim_agents.py" name="spawn_pedsim_agents"  output="screen">
    </node>
 
@@ -40,17 +43,31 @@
       type="robot_state_publisher" output="screen"
       launch-prefix="bash -c 'sleep 1; $0 $@'"/>
 
- <node name="rviz" pkg="rviz" type="rviz"
+  <node if="$(arg gui)" name="rviz" pkg="rviz" type="rviz"
 	args="-d $(find mushr_gazebo)/rviz/mushr.rviz" output="screen"
-	launch-prefix="bash -c 'sleep 4; $0 $@'"/> 
+	launch-prefix="bash -c 'sleep 4; $0 $@'"/>
+
   <node pkg="mushr_gazebo" type="lidar_conversion" name="lidar_conversion" output="screen"/>
 
   <!-- Publishes tf map -> base_footprint from gazebo ground truth, giving the
        tf tree a "map" frame. Required by mapping_node's lookupTransform("map", "laser"). -->
   <node pkg="mushr_gazebo" type="ground_truth.py" name="ground_truth" output="screen"/>
 
-  <node name="gamecontroller_teleop" pkg="mushr_gazebo" type="gazebo_gamecontroller_teleop" output="screen"/>
+  <!-- keyboard_teleop needs a controlling TTY (it puts the terminal in raw
+       mode and reads stdin), which roslaunch nodes don't get. Launched here it
+       would only ever publish zero-drive on /ackermann_cmd and double up with
+       an interactive instance. Run it manually in an interactive shell instead:
+         docker exec -it lab-car-gazebo bash -lc \
+           "source /opt/ros/melodic/setup.bash && source /home/Lab-Car-2/devel/setup.bash && rosrun mushr_gazebo gazebo_keyboard_teleop"
+       Keys: w/s drive, a/d steer, space stop, q quit. -->
+  <!-- <node name="keyboard_teleop" pkg="mushr_gazebo" type="gazebo_keyboard_teleop" output="screen"/> -->
 
   <node pkg="mushr_gazebo" type="mapping_node" name="mapping_node" output="screen"/>
+
+  <!-- Euclidean signed distance field over the same octree, published as a
+       colored horizontal slice on /esdf_markers (red = near obstacle,
+       green = >= max distance). Same /cloud -> map-frame -> octree pipeline
+       as mapping_node, just also runs a DynamicEDTOctomap distance transform. -->
+  <node pkg="mushr_gazebo" type="esdf_node" name="esdf_node" output="screen"/>
   <param name="/use_sim_time" value="true"/>
 </launch>

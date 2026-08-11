@@ -24,9 +24,9 @@ namespace KeyboardTeleop{
             float steering=0.0;
             float target_speed=0.0;    // set by keys, zeroed by timeouts
             float target_steering=0.0;
-            float drive_speed=25.0;     // m/s commanded while w/s is held
+            float drive_speed=2.0;     // m/s commanded while w/s is held
             float turn_angle=0.34;     // rad commanded while a/d is held
-            float speed_ramp=20.0;      // m/s^2 accel/decel toward target_speed
+            float speed_ramp=3.0;      // m/s^2 accel/decel toward target_speed
             float steer_ramp=2.0;      // rad/s toward target_steering
             int key_timeout_cycles=24;   // ~0.8s at 30Hz, outlasts the initial key-repeat delay
             int steer_timeout_cycles=24; // same, but only a/d refresh it so steering re-centers on its own

@@ -3,9 +3,18 @@
     <!-- this file is auto generated using pedsim_gazebo_plugin pkg -->    
     <sdf version="1.5">
       <world name="default">
-      
+
+      <!-- Start the GUI camera looking at the mushr spawn point (3, 3, 0)
+           instead of the generic default view. -->
+      <gui fullscreen='0'>
+        <camera name='user_camera'>
+          <pose>-3 -3 5 0 0.4 0.785</pose>
+          <view_controller>orbit</view_controller>
+        </camera>
+      </gui>
+
       <!-- Ground Plane -->
-      
+
       <include>
         <uri>model://ground_plane</uri>
       </include>
@@ -4280,7 +4289,7 @@
     </model>
     
 
-            <plugin name="ActorPosesPlugin" filename="libActorPosesPlugin.dylib">
+            <plugin name="ActorPosesPlugin" filename="libActorPosesPlugin.so">
         </plugin>
     
     

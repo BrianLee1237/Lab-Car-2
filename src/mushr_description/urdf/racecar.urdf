@@ -343,7 +343,7 @@
 
   <!-- DRIVE PLUGIN -->
   <gazebo>
-    <plugin name="mushr_ackermann_drive" filename="libmushr_gazebo.dylib">
+    <plugin name="mushr_ackermann_drive" filename="libmushr_gazebo.so">
       <left_front_joint>front_left_wheel_throttle</left_front_joint>
       <right_front_joint>front_right_wheel_throttle</right_front_joint>
       <left_rear_joint>back_left_wheel_throttle</left_rear_joint>
