@@ -1,0 +1,17 @@
+build/
+devel/
+.git/
+.vscode/
+.claude/
+src/mushr_description/meshes.zip
+
+# Machine-specific symlink created by catkin_init_workspace; regenerated
+# inside the image by the Dockerfile instead of being copied in, since a
+# broken symlink in the build context makes Docker Desktop's context
+# transfer fail outright on Windows hosts.
+src/CMakeLists.txt
+
+# Real-camera driver, not used by the Gazebo sim. Needs the Intel
+# RealSense SDK and ddynamic_reconfigure, neither of which the sim
+# image carries; only relevant when building on the real TX2 robot.
+src/realsense-ros

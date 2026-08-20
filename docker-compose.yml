@@ -1,0 +1,10 @@
+services:
+  gazebo:
+    build: .
+    image: lab-car-2-gazebo
+    container_name: lab-car-gazebo
+    platform: linux/amd64
+    ports:
+      - "6080:6080"
+    stdin_open: true
+    tty: true
