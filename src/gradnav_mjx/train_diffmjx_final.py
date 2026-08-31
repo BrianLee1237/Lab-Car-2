@@ -245,7 +245,8 @@ def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, hori
     valid = jnp.isfinite(final_dists)
     mean_dist = jnp.mean(jnp.where(valid, final_dists, 0.0)) / jnp.maximum(jnp.mean(valid), 1e-6)
     n_collisions = jnp.sum(min_obstacle_dists < CAR_RADIUS)
-    return mean_dist, n_collisions
+    success_rate = jnp.mean((final_dists < 0.5) & valid)
+    return mean_dist, n_collisions, success_rate
 
 
 def main():
@@ -318,10 +319,11 @@ def main():
         if (it + 1) % args.eval_every == 0:
             eval_map = mjx_models[0]
             eval_walls = map_walls_arrays[0]
-            eval_dist, eval_collisions = eval_fn(eval_map, policy_params, value_params, eval_walls)
+            eval_dist, eval_collisions, eval_success = eval_fn(eval_map, policy_params, value_params, eval_walls)
             loss_display = float(loss) if jnp.isfinite(loss) else float("nan")
             print(f"iter {it+1:4d}  map={map_idx}  progress={progress:.2f}  goal_range=[{min_dist:.1f},{max_dist:.1f}]  "
-                  f"loss={loss_display:.3f}  EVAL_dist(fixed)={float(eval_dist):.3f}  EVAL_collisions={int(eval_collisions)}/16")
+                  f"loss={loss_display:.3f}  EVAL_dist(fixed)={float(eval_dist):.3f}  "
+                  f"EVAL_success={float(eval_success)*100:.0f}%  EVAL_collisions={int(eval_collisions)}/16")
 
     print("\nDone.")
     import numpy as np
