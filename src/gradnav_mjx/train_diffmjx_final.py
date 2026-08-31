@@ -160,7 +160,7 @@ def rollout(mjx_model, policy_params, value_params, walls, goal, horizon, gamma=
         return new_carry, None
 
     def outer_step(carry, _):
-        data, prev_action, prev_prev_action, prev_goal_dist, total_return, global_discount, min_obstacle_dist_seen = carry
+        data, prev_action, prev_prev_action, prev_goal_dist, total_return, global_discount, min_obstacle_dist_seen, value_loss = carry
 
         # truncate the differentiable chain: nothing before this point in
         # the episode contributes gradient to what happens in this window.
@@ -168,6 +168,8 @@ def rollout(mjx_model, policy_params, value_params, walls, goal, horizon, gamma=
         prev_action = jax.lax.stop_gradient(prev_action)
         prev_prev_action = jax.lax.stop_gradient(prev_prev_action)
         prev_goal_dist = jax.lax.stop_gradient(prev_goal_dist)
+
+        window_start_obs, _, _, _, _ = build_obs(data, goal, walls)
 
         window_carry0 = (data, prev_action, prev_prev_action, prev_goal_dist,
                           jnp.array(0.0), jnp.array(1.0), min_obstacle_dist_seen)
@@ -179,9 +181,21 @@ def rollout(mjx_model, policy_params, value_params, walls, goal, horizon, gamma=
         total_return = total_return + global_discount * (window_reward + bootstrap)
         global_discount = global_discount * window_discount
 
+        # SHAC-style critic loss: regress V(obs at window start) toward the
+        # actual window return + bootstrap (a semi-gradient TD target --
+        # stop_gradient so the target doesn't get optimized, only the
+        # prediction does). window_start_obs is already detached from
+        # everything before this window by the stop_gradient above, so this
+        # term contributes zero gradient to policy_params, only to
+        # value_params -- proper actor/critic separation falls out of the
+        # truncation scheme for free.
+        td_target = jax.lax.stop_gradient(window_reward + bootstrap)
+        pred_value = value_forward(value_params, window_start_obs)
+        value_loss = value_loss + (pred_value - td_target) ** 2
+
         new_carry = (
             data, action, prev_action_out, goal_dist,
-            total_return, global_discount, min_obstacle_dist_seen,
+            total_return, global_discount, min_obstacle_dist_seen, value_loss,
         )
         return new_carry, None
 
@@ -193,21 +207,27 @@ def rollout(mjx_model, policy_params, value_params, walls, goal, horizon, gamma=
         jnp.array(0.0),        # total_return
         jnp.array(1.0),        # global_discount
         jnp.array(jnp.inf),    # min_obstacle_dist_seen
+        jnp.array(0.0),        # value_loss
     )
     final_carry, _ = jax.lax.scan(outer_step, carry0, None, length=n_windows)
-    data, _, _, _, total_return, _, min_obstacle_dist_seen = final_carry
+    data, _, _, _, total_return, _, min_obstacle_dist_seen, value_loss = final_carry
 
     final_obs, x, y, theta, _ = build_obs(data, goal, walls)
     final_dist = jnp.sqrt((goal[0] - x) ** 2 + (goal[1] - y) ** 2)
-    return total_return, final_dist, min_obstacle_dist_seen
+    return total_return, final_dist, min_obstacle_dist_seen, value_loss / n_windows
+
+
+VALUE_LOSS_WEIGHT = 0.5
 
 
 def batched_loss(mjx_model, policy_params, value_params, walls, goals, horizon):
     def single(goal):
         return rollout(mjx_model, policy_params, value_params, walls, goal, horizon)
-    returns, final_dists, min_obstacle_dists = jax.vmap(single)(goals)
-    loss = -jnp.mean(returns)
-    return loss, final_dists, min_obstacle_dists
+    returns, final_dists, min_obstacle_dists, value_losses = jax.vmap(single)(goals)
+    actor_loss = -jnp.mean(returns)
+    critic_loss = jnp.mean(value_losses)
+    loss = actor_loss + VALUE_LOSS_WEIGHT * critic_loss
+    return loss, final_dists, min_obstacle_dists, actor_loss, critic_loss
 
 
 def sample_goals(key, batch_size, min_dist, max_dist):
@@ -241,7 +261,7 @@ def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, hori
     across the whole run."""
     g = jax.random.PRNGKey(999)
     goals = sample_goals(g, n_eval, 0.5, 2.5)
-    _, final_dists, min_obstacle_dists = batched_loss(mjx_model, policy_params, value_params, walls, goals, horizon)
+    _, final_dists, min_obstacle_dists, _, _ = batched_loss(mjx_model, policy_params, value_params, walls, goals, horizon)
     valid = jnp.isfinite(final_dists)
     mean_dist = jnp.mean(jnp.where(valid, final_dists, 0.0)) / jnp.maximum(jnp.mean(valid), 1e-6)
     n_collisions = jnp.sum(min_obstacle_dists < CAR_RADIUS)
