@@ -23,29 +23,29 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
       <freejoint name="chassis_free"/>
       <geom name="chassis_geom" type="capsule" size="0.09" fromto="-0.15 0 0 0.15 0 0" mass="3.0" rgba="0.8 0.1 0.1 1"/>
 
-      <body name="wheel_fl" pos="0.15 0.1 -0.05">
-        <joint name="steer_fl" type="hinge" axis="0 0 1" range="-0.34 0.34"/>
+      <body name="wheel_fl" pos="0.1483 0.115 -0.05">
+        <joint name="steer_fl" type="hinge" axis="0 0 1" range="-0.6 0.6"/>
         <geom name="knuckle_fl_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fl_spin">
           <joint name="spin_fl" type="hinge" axis="0 1 0"/>
-          <geom name="wheel_fl_geom" type="capsule" size="0.04" fromto="0 -0.02 0 0 0.02 0" mass="0.2" rgba="0.1 0.1 0.1 1"/>
+          <geom name="wheel_fl_geom" type="capsule" size="0.05" fromto="0 -0.0215 0 0 0.0215 0" mass="0.1" rgba="0.1 0.1 0.1 1"/>
         </body>
       </body>
-      <body name="wheel_fr" pos="0.15 -0.1 -0.05">
-        <joint name="steer_fr" type="hinge" axis="0 0 1" range="-0.34 0.34"/>
+      <body name="wheel_fr" pos="0.1483 -0.115 -0.05">
+        <joint name="steer_fr" type="hinge" axis="0 0 1" range="-0.6 0.6"/>
         <geom name="knuckle_fr_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fr_spin">
           <joint name="spin_fr" type="hinge" axis="0 1 0"/>
-          <geom name="wheel_fr_geom" type="capsule" size="0.04" fromto="0 -0.02 0 0 0.02 0" mass="0.2" rgba="0.1 0.1 0.1 1"/>
+          <geom name="wheel_fr_geom" type="capsule" size="0.05" fromto="0 -0.0215 0 0 0.0215 0" mass="0.1" rgba="0.1 0.1 0.1 1"/>
         </body>
       </body>
-      <body name="wheel_rl" pos="-0.15 0.1 -0.05">
+      <body name="wheel_rl" pos="-0.1483 0.115 -0.05">
         <joint name="spin_rl" type="hinge" axis="0 1 0"/>
-        <geom name="wheel_rl_geom" type="capsule" size="0.04" fromto="0 -0.02 0 0 0.02 0" mass="0.2" rgba="0.1 0.1 0.1 1"/>
+        <geom name="wheel_rl_geom" type="capsule" size="0.05" fromto="0 -0.0215 0 0 0.0215 0" mass="0.1" rgba="0.1 0.1 0.1 1"/>
       </body>
-      <body name="wheel_rr" pos="-0.15 -0.1 -0.05">
+      <body name="wheel_rr" pos="-0.1483 -0.115 -0.05">
         <joint name="spin_rr" type="hinge" axis="0 1 0"/>
-        <geom name="wheel_rr_geom" type="capsule" size="0.04" fromto="0 -0.02 0 0 0.02 0" mass="0.2" rgba="0.1 0.1 0.1 1"/>
+        <geom name="wheel_rr_geom" type="capsule" size="0.05" fromto="0 -0.0215 0 0 0.0215 0" mass="0.1" rgba="0.1 0.1 0.1 1"/>
       </body>
     </body>
   </worldbody>
