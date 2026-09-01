@@ -177,13 +177,25 @@ def rollout(mjx_model, policy_params, value_params, target_value_params, walls, 
         data, action, prev_action_out, goal_dist, window_reward, window_discount, min_obstacle_dist_seen = window_final
 
         final_obs, _, _, _, _ = build_obs(data, goal, walls)
-        # Bootstrap with the *target* critic (a slow, Polyak-averaged copy
+        # Bootstrap with the *target* critics (slow, Polyak-averaged copies
         # of value_params, updated outside this rollout/gradient) rather
-        # than the live one. SHAC's own writeup notes the live critic's
+        # than the live ones. SHAC's own writeup notes the live critic's
         # value landscape is noisy enough on harder tasks that bootstrapping
         # with it directly destabilizes training; a delayed target fixes it
         # the same way it does in DDPG/TD3/SAC-style target networks.
-        bootstrap = window_discount * value_forward(target_value_params, final_obs)
+        #
+        # Double critic (TD3-style, per AHAC -- Georgiev et al. 2024, the
+        # direct successor to SHAC built for exactly this contact-rich
+        # setting): value_params/target_value_params are each a pair of
+        # independently-initialized critics; bootstrapping with their min
+        # counters the single-critic overestimation bias that otherwise
+        # compounds through the return, and gives each critic a slightly
+        # different TD target so their errors decorrelate over training.
+        vt1, vt2 = target_value_params
+        bootstrap_val = jnp.minimum(
+            value_forward(vt1, final_obs), value_forward(vt2, final_obs)
+        )
+        bootstrap = window_discount * bootstrap_val
         total_return = total_return + global_discount * (window_reward + bootstrap)
         global_discount = global_discount * window_discount
 
@@ -194,10 +206,13 @@ def rollout(mjx_model, policy_params, value_params, target_value_params, walls, 
         # everything before this window by the stop_gradient above, so this
         # term contributes zero gradient to policy_params, only to
         # value_params -- proper actor/critic separation falls out of the
-        # truncation scheme for free.
+        # truncation scheme for free. Both critics regress to the same
+        # (shared, min-based) target -- only their initialization differs.
         td_target = jax.lax.stop_gradient(window_reward + bootstrap)
-        pred_value = value_forward(value_params, window_start_obs)
-        value_loss = value_loss + (pred_value - td_target) ** 2
+        v1, v2 = value_params
+        pred_value_1 = value_forward(v1, window_start_obs)
+        pred_value_2 = value_forward(v2, window_start_obs)
+        value_loss = value_loss + (pred_value_1 - td_target) ** 2 + (pred_value_2 - td_target) ** 2
 
         new_carry = (
             data, action, prev_action_out, goal_dist,
@@ -309,10 +324,15 @@ def main():
     print(f"Built {args.n_maps} randomized maps (stock mujoco-mjx, iterations=1 + qvel clamp).")
 
     key = jax.random.PRNGKey(args.seed)
-    pkey, vkey = jax.random.split(key)
+    pkey, vkey1, vkey2 = jax.random.split(key, 3)
     policy_params = init_policy_params(pkey, lidar_dim=args.n_walls)
-    value_params = init_value_params(vkey, lidar_dim=args.n_walls)
-    target_value_params = value_params  # starts identical to the live critic
+    # double critic (AHAC/TD3-style): two independently-initialized value
+    # networks, bootstrapped via their min -- see the note in rollout().
+    value_params = (
+        init_value_params(vkey1, lidar_dim=args.n_walls),
+        init_value_params(vkey2, lidar_dim=args.n_walls),
+    )
+    target_value_params = value_params  # starts identical to the live critics
     policy_opt_state = adam_init(policy_params)
     value_opt_state = adam_init(value_params)
 
