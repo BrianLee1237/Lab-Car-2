@@ -100,7 +100,7 @@ def build_obs(data, goal, walls):
 BPTT_WINDOW = 32
 
 
-def rollout(mjx_model, policy_params, value_params, walls, goal, horizon, gamma=0.99):
+def rollout(mjx_model, policy_params, value_params, target_value_params, walls, goal, horizon, gamma=0.99):
     """Uses jax.lax.scan instead of a Python for-loop over `horizon` --
     unrolling in Python builds one XLA op per step per rollout, and once
     that's vmapped over a batch and differentiated it blows up compile
@@ -177,7 +177,13 @@ def rollout(mjx_model, policy_params, value_params, walls, goal, horizon, gamma=
         data, action, prev_action_out, goal_dist, window_reward, window_discount, min_obstacle_dist_seen = window_final
 
         final_obs, _, _, _, _ = build_obs(data, goal, walls)
-        bootstrap = window_discount * value_forward(value_params, final_obs)
+        # Bootstrap with the *target* critic (a slow, Polyak-averaged copy
+        # of value_params, updated outside this rollout/gradient) rather
+        # than the live one. SHAC's own writeup notes the live critic's
+        # value landscape is noisy enough on harder tasks that bootstrapping
+        # with it directly destabilizes training; a delayed target fixes it
+        # the same way it does in DDPG/TD3/SAC-style target networks.
+        bootstrap = window_discount * value_forward(target_value_params, final_obs)
         total_return = total_return + global_discount * (window_reward + bootstrap)
         global_discount = global_discount * window_discount
 
@@ -220,9 +226,9 @@ def rollout(mjx_model, policy_params, value_params, walls, goal, horizon, gamma=
 VALUE_LOSS_WEIGHT = 0.5
 
 
-def batched_loss(mjx_model, policy_params, value_params, walls, goals, horizon):
+def batched_loss(mjx_model, policy_params, value_params, target_value_params, walls, goals, horizon):
     def single(goal):
-        return rollout(mjx_model, policy_params, value_params, walls, goal, horizon)
+        return rollout(mjx_model, policy_params, value_params, target_value_params, walls, goal, horizon)
     returns, final_dists, min_obstacle_dists, value_losses = jax.vmap(single)(goals)
     actor_loss = -jnp.mean(returns)
     critic_loss = jnp.mean(value_losses)
@@ -255,13 +261,18 @@ def curriculum_goal_range(progress, max_dist, min_start=0.5):
     return 0.3, current_max
 
 
-def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, horizon, n_eval=16):
+def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, horizon, n_eval=48):
     """Always full difficulty, ALWAYS the same seed -- decoupled from
     training curriculum, so this is a trustworthy, comparable metric
-    across the whole run."""
+    across the whole run. n_eval=48 (up from an earlier 16): with only 16
+    goals a single flipped success/failure swings the reported rate by
+    ~6 percentage points, which was making run-to-run comparisons mostly
+    noise -- 48 cuts that swing to ~2 points."""
     g = jax.random.PRNGKey(999)
     goals = sample_goals(g, n_eval, 0.5, 2.5)
-    _, final_dists, min_obstacle_dists, _, _ = batched_loss(mjx_model, policy_params, value_params, walls, goals, horizon)
+    _, final_dists, min_obstacle_dists, _, _ = batched_loss(
+        mjx_model, policy_params, value_params, value_params, walls, goals, horizon
+    )
     valid = jnp.isfinite(final_dists)
     mean_dist = jnp.mean(jnp.where(valid, final_dists, 0.0)) / jnp.maximum(jnp.mean(valid), 1e-6)
     n_collisions = jnp.sum(min_obstacle_dists < CAR_RADIUS)
@@ -275,6 +286,10 @@ def main():
     parser.add_argument("--horizon", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr-final-frac", type=float, default=0.1,
+                         help="final LR as a fraction of --lr, linearly decayed over training")
+    parser.add_argument("--target-tau", type=float, default=0.005,
+                         help="Polyak averaging rate for the target critic")
     parser.add_argument("--max-dist", type=float, default=2.5)
     parser.add_argument("--n-maps", type=int, default=4)
     parser.add_argument("--n-walls", type=int, default=4)
@@ -297,25 +312,32 @@ def main():
     pkey, vkey = jax.random.split(key)
     policy_params = init_policy_params(pkey, lidar_dim=args.n_walls)
     value_params = init_value_params(vkey, lidar_dim=args.n_walls)
+    target_value_params = value_params  # starts identical to the live critic
     policy_opt_state = adam_init(policy_params)
     value_opt_state = adam_init(value_params)
 
     grad_fn = jax.value_and_grad(
-        lambda pp, vp, mjx_model, walls, goals: batched_loss(
-            mjx_model, pp, vp, walls, goals, args.horizon
+        lambda pp, vp, tvp, mjx_model, walls, goals: batched_loss(
+            mjx_model, pp, vp, tvp, walls, goals, args.horizon
         )[0],
         argnums=(0, 1),
     )
 
     @jax.jit
-    def train_step(policy_params, value_params, policy_opt_state, value_opt_state,
-                    mjx_model, walls, goals):
-        loss, (pgrads, vgrads) = grad_fn(policy_params, value_params, mjx_model, walls, goals)
+    def train_step(policy_params, value_params, target_value_params, policy_opt_state, value_opt_state,
+                    mjx_model, walls, goals, lr):
+        loss, (pgrads, vgrads) = grad_fn(policy_params, value_params, target_value_params, mjx_model, walls, goals)
         pgrads = clip_tree(sanitize_grads(pgrads))
         vgrads = clip_tree(sanitize_grads(vgrads))
-        policy_params, policy_opt_state = adam_update(policy_params, pgrads, policy_opt_state, lr=args.lr)
-        value_params, value_opt_state = adam_update(value_params, vgrads, value_opt_state, lr=args.lr)
+        policy_params, policy_opt_state = adam_update(policy_params, pgrads, policy_opt_state, lr=lr)
+        value_params, value_opt_state = adam_update(value_params, vgrads, value_opt_state, lr=lr)
         return policy_params, value_params, policy_opt_state, value_opt_state, loss
+
+    @jax.jit
+    def update_target(value_params, target_value_params, tau):
+        return jax.tree_util.tree_map(
+            lambda v, t: tau * v + (1 - tau) * t, value_params, target_value_params
+        )
 
     eval_fn = jax.jit(
         lambda mjx_model, pp, vp, walls: evaluate_fixed_benchmark(mjx_model, pp, vp, walls, args.horizon)
@@ -329,21 +351,27 @@ def main():
         progress = min(1.0, it / (args.iterations * 0.7))
         min_dist, max_dist = curriculum_goal_range(progress, args.max_dist)
 
+        # linear LR decay: args.lr -> args.lr * args.lr_final_frac over training
+        lr_progress = it / max(1, args.iterations - 1)
+        lr = args.lr * (1.0 - lr_progress) + (args.lr * args.lr_final_frac) * lr_progress
+
         key, gkey = jax.random.split(key)
         goals = sample_goals(gkey, args.batch_size, min_dist, max_dist)
 
         policy_params, value_params, policy_opt_state, value_opt_state, loss = train_step(
-            policy_params, value_params, policy_opt_state, value_opt_state, mjx_model, walls, goals
+            policy_params, value_params, target_value_params, policy_opt_state, value_opt_state,
+            mjx_model, walls, goals, lr,
         )
+        target_value_params = update_target(value_params, target_value_params, args.target_tau)
 
         if (it + 1) % args.eval_every == 0:
             eval_map = mjx_models[0]
             eval_walls = map_walls_arrays[0]
             eval_dist, eval_collisions, eval_success = eval_fn(eval_map, policy_params, value_params, eval_walls)
             loss_display = float(loss) if jnp.isfinite(loss) else float("nan")
-            print(f"iter {it+1:4d}  map={map_idx}  progress={progress:.2f}  goal_range=[{min_dist:.1f},{max_dist:.1f}]  "
+            print(f"iter {it+1:4d}  map={map_idx}  progress={progress:.2f}  goal_range=[{min_dist:.1f},{max_dist:.1f}]  lr={lr:.2e}  "
                   f"loss={loss_display:.3f}  EVAL_dist(fixed)={float(eval_dist):.3f}  "
-                  f"EVAL_success={float(eval_success)*100:.0f}%  EVAL_collisions={int(eval_collisions)}/16")
+                  f"EVAL_success={float(eval_success)*100:.0f}%  EVAL_collisions={int(eval_collisions)}/48")
 
     print("\nDone.")
     import numpy as np
