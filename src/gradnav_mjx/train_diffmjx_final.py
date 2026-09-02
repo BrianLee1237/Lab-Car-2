@@ -282,9 +282,19 @@ def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, hori
     across the whole run. n_eval=48 (up from an earlier 16): with only 16
     goals a single flipped success/failure swings the reported rate by
     ~6 percentage points, which was making run-to-run comparisons mostly
-    noise -- 48 cuts that swing to ~2 points."""
+    noise -- 48 cuts that swing to ~2 points.
+
+    Goal range 0.3-1.0m (was 0.5-2.5m): calibrated the car's actual travel
+    envelope under this horizon/physics -- pure-throttle distance peaks
+    around 1.0-1.1m by ~1200 steps and then the trajectory becomes
+    unstable (wall contact), so most of the old 0.5-2.5m range was
+    testing goals the car could not physically reach in the episode
+    regardless of policy quality, capping success rate on reachability,
+    not skill. This also matches --max-dist 1.0 in the curriculum, so
+    eval is no longer testing a harder distribution than training ever
+    covers."""
     g = jax.random.PRNGKey(999)
-    goals = sample_goals(g, n_eval, 0.5, 2.5)
+    goals = sample_goals(g, n_eval, 0.3, 1.0)
     _, final_dists, min_obstacle_dists, _, _ = batched_loss(
         mjx_model, policy_params, value_params, value_params, walls, goals, horizon
     )
