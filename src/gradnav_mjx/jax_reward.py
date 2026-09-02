@@ -26,9 +26,23 @@ def jax_reward(
     obstacle_dists,
     prev_goal_dist,
     arena_size=10.0,
-    obstacle_safety_dist=1.5,
+    obstacle_safety_dist=0.6,
     weights=None,
 ):
+    """
+    obstacle_safety_dist 1.5 -> 0.6: 1.5m was sized for a 10m arena, but
+    on this task goals are only 0.3-1.0m away -- a 1.5m "danger radius"
+    covers nearly the whole relevant area, penalizing the car for merely
+    existing near any wall rather than for actually risking collision
+    (CAR_RADIUS=0.24, so 0.6 still gives real stopping margin).
+
+    progress weight 8.0 -> 400.0: per-step position change is tiny
+    (~0.001-0.003m at this speed/timestep), so the old weighted
+    contribution was ~0.01-0.02 -- two orders of magnitude smaller than
+    the action (~0-2) and obstacle (~0-2) penalty terms. The actual
+    "get closer to the goal" signal was being drowned out by everything
+    else; 400x brings it back to a comparable scale (~0.4-1.2).
+    """
     if weights is None:
         weights = dict(
             survival=0.5,
@@ -36,7 +50,7 @@ def jax_reward(
             action_rate=-1.0,
             smoothness=-1.0,
             yaw_alignment=0.25,
-            progress=8.0,
+            progress=400.0,
             precision=1.0,
             obstacle=1.0,
             out_of_map=-2.0,
