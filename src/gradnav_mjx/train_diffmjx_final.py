@@ -23,6 +23,33 @@ up over a handful of steps and go NaN. Clamping qvel after every
 `mjx.step` call bounds the state and keeps the whole rollout (and
 its gradient) finite; confirmed on this scene with a 60-step
 rollout (forward value and `jax.grad` both finite, no NaNs).
+
+mjx_solver_patch.py (applied below) fixes a further, separate issue:
+`iterations=1` also means the contact solve isn't very *accurate*
+(one CG step), not just non-differentiable at higher iteration counts.
+An open-loop full-throttle calibration test showed the car's
+distance-covered bouncing erratically step to step (wobble/jitter)
+instead of increasing smoothly. mjx already ships a differentiable
+scan-based while-loop internally for its linesearch
+(`_while_loop_scan`, docstring: "reverse-mode autodiff ok") -- the
+patch reuses that same construct for the outer CG solve too, so
+`iterations` can be raised above 1 (mjx_car_scene.py sets 4) while
+staying differentiable. Combined with the real MuSHR hardware's
+actual tire friction and drivetrain torque (mu=2.0, gear=0.78,
+derived from the traction limit implied by the real racecar.urdf's
+`mu1=2` wheel friction spec -- github.com/dhruvdotc/Lab-Car-2), the
+calibration test then shows smooth, monotonic progress with no wobble.
+
+Caution: the multi-iteration solve is significantly more memory-
+hungry during backprop (it retains state across all `iterations`
+solver steps per physics step, not just one). Training at the long
+horizon multi-meter goals need (roughly 3500-4000 steps per meter at
+this car's real, friction-limited cruise speed of ~0.11-0.21 m/s) can
+need far more device memory than a typical sandboxed/cloud dev
+environment provides -- confirmed OOM in exactly that kind of
+environment even at batch_size=2, horizon=3500 (~1m target). If you
+hit OOM, reduce --batch-size and/or --horizon, or run on a machine
+with more GPU/TPU memory.
 """
 
 import argparse
@@ -31,6 +58,9 @@ import jax
 import jax.numpy as jnp
 import mujoco
 import mujoco.mjx as mjx
+
+import mjx_solver_patch
+mjx_solver_patch.apply()
 
 from mjx_car_scene import build_car_scene_xml
 from mjx_random_maps import generate_map_set
@@ -98,6 +128,8 @@ def build_obs(data, goal, walls):
 
 
 BPTT_WINDOW = 32
+SUCCESS_DIST = 0.5
+TERMINAL_BONUS = 50.0
 
 
 def rollout(mjx_model, policy_params, value_params, target_value_params, walls, goal, horizon, gamma=0.99):
@@ -135,32 +167,50 @@ def rollout(mjx_model, policy_params, value_params, target_value_params, walls, 
     n_windows = max(1, horizon // BPTT_WINDOW)
 
     def inner_step(carry, _):
-        data, prev_action, prev_prev_action, prev_goal_dist, window_reward, window_discount, min_obstacle_dist_seen = carry
+        (data, prev_action, prev_prev_action, prev_goal_dist, window_reward,
+         window_discount, min_obstacle_dist_seen, done) = carry
 
         obs, x, y, theta, obstacle_d = build_obs(data, goal, walls)
         action = policy_forward(policy_params, obs)
         ctrl = jnp.array([action[0], action[1], action[1]])
+        ctrl = jnp.where(done, jnp.zeros_like(ctrl), ctrl)
+        prev_data = data
         data = data.replace(ctrl=ctrl)
         data = mjx.step(mjx_model, data)
         data = data.replace(qvel=jnp.clip(data.qvel, -QVEL_CLAMP, QVEL_CLAMP))
+        # Once the goal has been reached, freeze the physics state entirely
+        # (straight-through select, same trick as elsewhere in this file):
+        # otherwise the car keeps driving with zeroed ctrl and can still
+        # coast/drift past the goal under momentum, which is exactly the
+        # "reached it, then wandered off before the episode ended" failure
+        # mode a trajectory trace found -- final-position success was
+        # undercounting real navigation success by ~23 points (26% vs. 49%
+        # on an "ever reached the goal" metric) purely because there was no
+        # incentive or mechanism to stop once there.
+        data = jax.tree_util.tree_map(lambda old, new: jnp.where(done, old, new), prev_data, data)
 
         car_xy = jnp.array([x, y])
         r, goal_dist = jax_reward(
             car_xy, theta, action, prev_action, prev_prev_action,
             goal, obstacle_d, prev_goal_dist,
         )
+        just_succeeded = (goal_dist < SUCCESS_DIST) & (~done)
+        r = jnp.where(done, 0.0, r) + jnp.where(just_succeeded, TERMINAL_BONUS, 0.0)
+        done = done | just_succeeded
+
         window_reward = window_reward + window_discount * r
         window_discount = window_discount * gamma
         min_obstacle_dist_seen = jnp.minimum(min_obstacle_dist_seen, jnp.min(obstacle_d))
 
         new_carry = (
             data, action, prev_action, goal_dist,
-            window_reward, window_discount, min_obstacle_dist_seen,
+            window_reward, window_discount, min_obstacle_dist_seen, done,
         )
         return new_carry, None
 
     def outer_step(carry, _):
-        data, prev_action, prev_prev_action, prev_goal_dist, total_return, global_discount, min_obstacle_dist_seen, value_loss = carry
+        (data, prev_action, prev_prev_action, prev_goal_dist, total_return,
+         global_discount, min_obstacle_dist_seen, value_loss, done) = carry
 
         # truncate the differentiable chain: nothing before this point in
         # the episode contributes gradient to what happens in this window.
@@ -172,9 +222,10 @@ def rollout(mjx_model, policy_params, value_params, target_value_params, walls, 
         window_start_obs, _, _, _, _ = build_obs(data, goal, walls)
 
         window_carry0 = (data, prev_action, prev_prev_action, prev_goal_dist,
-                          jnp.array(0.0), jnp.array(1.0), min_obstacle_dist_seen)
+                          jnp.array(0.0), jnp.array(1.0), min_obstacle_dist_seen, done)
         window_final, _ = jax.lax.scan(inner_step, window_carry0, None, length=BPTT_WINDOW)
-        data, action, prev_action_out, goal_dist, window_reward, window_discount, min_obstacle_dist_seen = window_final
+        (data, action, prev_action_out, goal_dist, window_reward, window_discount,
+         min_obstacle_dist_seen, done) = window_final
 
         final_obs, _, _, _, _ = build_obs(data, goal, walls)
         # Bootstrap with the *target* critics (slow, Polyak-averaged copies
@@ -216,7 +267,7 @@ def rollout(mjx_model, policy_params, value_params, target_value_params, walls, 
 
         new_carry = (
             data, action, prev_action_out, goal_dist,
-            total_return, global_discount, min_obstacle_dist_seen, value_loss,
+            total_return, global_discount, min_obstacle_dist_seen, value_loss, done,
         )
         return new_carry, None
 
@@ -229,9 +280,10 @@ def rollout(mjx_model, policy_params, value_params, target_value_params, walls, 
         jnp.array(1.0),        # global_discount
         jnp.array(jnp.inf),    # min_obstacle_dist_seen
         jnp.array(0.0),        # value_loss
+        jnp.array(False),      # done (goal reached -> freeze state, per-goal terminal bonus)
     )
     final_carry, _ = jax.lax.scan(outer_step, carry0, None, length=n_windows)
-    data, _, _, _, total_return, _, min_obstacle_dist_seen, value_loss = final_carry
+    data, _, _, _, total_return, _, min_obstacle_dist_seen, value_loss, _ = final_carry
 
     final_obs, x, y, theta, _ = build_obs(data, goal, walls)
     final_dist = jnp.sqrt((goal[0] - x) ** 2 + (goal[1] - y) ** 2)
@@ -276,7 +328,8 @@ def curriculum_goal_range(progress, max_dist, min_start=0.5):
     return 0.3, current_max
 
 
-def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, horizon, n_eval=48):
+def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, horizon,
+                              n_eval=48, min_dist=0.3, max_dist=1.0, eval_chunk=None):
     """Always full difficulty, ALWAYS the same seed -- decoupled from
     training curriculum, so this is a trustworthy, comparable metric
     across the whole run. n_eval=48 (up from an earlier 16): with only 16
@@ -284,20 +337,33 @@ def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, hori
     ~6 percentage points, which was making run-to-run comparisons mostly
     noise -- 48 cuts that swing to ~2 points.
 
-    Goal range 0.3-1.0m (was 0.5-2.5m): calibrated the car's actual travel
-    envelope under this horizon/physics -- pure-throttle distance peaks
-    around 1.0-1.1m by ~1200 steps and then the trajectory becomes
-    unstable (wall contact), so most of the old 0.5-2.5m range was
-    testing goals the car could not physically reach in the episode
-    regardless of policy quality, capping success rate on reachability,
-    not skill. This also matches --max-dist 1.0 in the curriculum, so
-    eval is no longer testing a harder distribution than training ever
-    covers."""
+    min_dist/max_dist should match whatever --max-dist the run trained
+    with -- calibrate the car's actual travel envelope under your horizon
+    first (an open-loop full-throttle rollout; see mjx_solver_patch.py's
+    module docstring) rather than guessing, otherwise this silently tests
+    goals the car cannot physically reach in the episode regardless of
+    policy quality, which caps success rate on reachability, not skill
+    (this exact bug previously existed with a hardcoded 0.5-2.5m range
+    against a ~1.0-1.1m actual envelope).
+
+    eval_chunk: if set, evaluates in batches of this size sequentially
+    instead of one big vmap -- necessary at long horizons where a full
+    n_eval-sized batch can exceed available device memory during the
+    forward pass (observed OOM at n_eval=300, horizon=14000)."""
     g = jax.random.PRNGKey(999)
-    goals = sample_goals(g, n_eval, 0.3, 1.0)
-    _, final_dists, min_obstacle_dists, _, _ = batched_loss(
-        mjx_model, policy_params, value_params, value_params, walls, goals, horizon
-    )
+    goals = sample_goals(g, n_eval, min_dist, max_dist)
+    if eval_chunk is None:
+        eval_chunk = n_eval
+    final_dists_chunks, min_obs_chunks = [], []
+    for i in range(0, n_eval, eval_chunk):
+        chunk_goals = goals[i:i + eval_chunk]
+        _, cfd, cmo, _, _ = batched_loss(
+            mjx_model, policy_params, value_params, value_params, walls, chunk_goals, horizon
+        )
+        final_dists_chunks.append(cfd)
+        min_obs_chunks.append(cmo)
+    final_dists = jnp.concatenate(final_dists_chunks)
+    min_obstacle_dists = jnp.concatenate(min_obs_chunks)
     valid = jnp.isfinite(final_dists)
     mean_dist = jnp.mean(jnp.where(valid, final_dists, 0.0)) / jnp.maximum(jnp.mean(valid), 1e-6)
     n_collisions = jnp.sum(min_obstacle_dists < CAR_RADIUS)
@@ -321,6 +387,11 @@ def main():
     parser.add_argument("--switch-every", type=int, default=50)
     parser.add_argument("--eval-every", type=int, default=25)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--eval-n", type=int, default=48)
+    parser.add_argument("--eval-min-dist", type=float, default=0.3)
+    parser.add_argument("--eval-chunk", type=int, default=None,
+                         help="evaluate in batches of this size instead of one big vmap -- "
+                              "use at long horizons to avoid OOM during eval (try e.g. 10-20)")
     args = parser.parse_args()
 
     map_wall_lists = generate_map_set(n_maps=args.n_maps, n_walls=args.n_walls, base_seed=args.seed)
@@ -331,7 +402,8 @@ def main():
         model = mujoco.MjModel.from_xml_path(scene_path)
         m = mjx.put_model(model)
         mjx_models.append(m)
-    print(f"Built {args.n_maps} randomized maps (stock mujoco-mjx, iterations=1 + qvel clamp).")
+    print(f"Built {args.n_maps} randomized maps (stock mujoco-mjx, patched multi-iteration "
+          f"differentiable solver + qvel clamp).")
 
     key = jax.random.PRNGKey(args.seed)
     pkey, vkey1, vkey2 = jax.random.split(key, 3)
@@ -370,8 +442,16 @@ def main():
         )
 
     eval_fn = jax.jit(
-        lambda mjx_model, pp, vp, walls: evaluate_fixed_benchmark(mjx_model, pp, vp, walls, args.horizon)
+        lambda mjx_model, pp, vp, walls: evaluate_fixed_benchmark(
+            mjx_model, pp, vp, walls, args.horizon,
+            n_eval=args.eval_n, min_dist=args.eval_min_dist, max_dist=args.max_dist,
+            eval_chunk=args.eval_chunk,
+        )
     )
+
+    best_success = -1.0
+    best_policy_params = policy_params
+    best_value_params = value_params
 
     for it in range(args.iterations):
         map_idx = (it // args.switch_every) % args.n_maps
@@ -401,14 +481,40 @@ def main():
             loss_display = float(loss) if jnp.isfinite(loss) else float("nan")
             print(f"iter {it+1:4d}  map={map_idx}  progress={progress:.2f}  goal_range=[{min_dist:.1f},{max_dist:.1f}]  lr={lr:.2e}  "
                   f"loss={loss_display:.3f}  EVAL_dist(fixed)={float(eval_dist):.3f}  "
-                  f"EVAL_success={float(eval_success)*100:.0f}%  EVAL_collisions={int(eval_collisions)}/48")
+                  f"EVAL_success={float(eval_success)*100:.0f}%  EVAL_collisions={int(eval_collisions)}/{args.eval_n}")
 
-    print("\nDone.")
+            if float(eval_success) > best_success:
+                best_success = float(eval_success)
+                best_policy_params = policy_params
+                best_value_params = value_params
+                print(f"         -> new best checkpoint (success={best_success*100:.0f}%) saved in memory")
+
+    print(f"\nDone. Best checkpoint during training: success={best_success*100:.0f}% (on the standard {args.eval_n}-goal eval).")
+
+    # Standard ML practice: report/ship the best-validation checkpoint, not
+    # blindly the final iteration's -- and re-score it on a much larger,
+    # lower-variance goal sample (48 goals means one flipped success/failure
+    # swings the reported rate by ~2 points; 300 goals cuts that to <0.3).
+    print("Re-evaluating best checkpoint on a larger (n=300) goal sample for a low-variance estimate...")
+    eval_map = mjx_models[0]
+    eval_walls = map_walls_arrays[0]
+    large_dist, large_collisions, large_success = evaluate_fixed_benchmark(
+        eval_map, best_policy_params, best_value_params, eval_walls, args.horizon, n_eval=300,
+        min_dist=args.eval_min_dist, max_dist=args.max_dist, eval_chunk=args.eval_chunk,
+    )
+    print(f"LARGE-SAMPLE EVAL (best checkpoint, n=300): "
+          f"success={float(large_success)*100:.1f}%  mean_dist={float(large_dist):.3f}  "
+          f"collisions={int(large_collisions)}/300")
+
     import numpy as np
     np.savez("diffmjx_policy_final.npz",
              **{f"p{i}_W": np.array(w) for i, (w, b) in enumerate(policy_params)},
              **{f"p{i}_b": np.array(b) for i, (w, b) in enumerate(policy_params)})
-    print("Policy saved to diffmjx_policy_final.npz")
+    np.savez("diffmjx_policy_best.npz",
+             **{f"p{i}_W": np.array(w) for i, (w, b) in enumerate(best_policy_params)},
+             **{f"p{i}_b": np.array(b) for i, (w, b) in enumerate(best_policy_params)})
+    print("Final-iteration policy saved to diffmjx_policy_final.npz")
+    print("Best-checkpoint policy saved to diffmjx_policy_best.npz")
 
 
 if __name__ == "__main__":

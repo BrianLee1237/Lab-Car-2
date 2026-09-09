@@ -9,11 +9,11 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
     xml = f"""
 <mujoco model="ackermann_car_scene">
   <compiler angle="radian"/>
-  <option timestep="0.002" gravity="0 0 -9.81" iterations="1" cone="pyramidal"/>
+  <option timestep="0.002" gravity="0 0 -9.81" iterations="4" cone="pyramidal"/>
 
   <default>
     <joint damping="0.05"/>
-    <geom friction="0.9 0.1 0.1" contype="1" conaffinity="1"/>
+    <geom friction="2.0 0.1 0.1" contype="1" conaffinity="1"/>
   </default>
 
   <worldbody>
@@ -56,8 +56,8 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
 
   <actuator>
     <motor name="steer" joint="steer_fl" gear="1" ctrlrange="-1 1"/>
-    <motor name="throttle_rl" joint="spin_rl" gear="0.35" ctrlrange="-1 1"/>
-    <motor name="throttle_rr" joint="spin_rr" gear="0.35" ctrlrange="-1 1"/>
+    <motor name="throttle_rl" joint="spin_rl" gear="0.78" ctrlrange="-1 1"/>
+    <motor name="throttle_rr" joint="spin_rr" gear="0.78" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
 """
