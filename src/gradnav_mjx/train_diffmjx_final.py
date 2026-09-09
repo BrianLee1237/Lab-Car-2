@@ -208,7 +208,22 @@ def rollout(mjx_model, policy_params, value_params, target_value_params, walls, 
         )
         return new_carry, None
 
+    @jax.checkpoint
     def outer_step(carry, _):
+        # jax.checkpoint (remat): jax.lax.scan's reverse-mode autodiff
+        # normally retains every window's intermediate values for the
+        # whole outer scan, even for windows whose gradient contribution
+        # is cut below by stop_gradient -- so memory still scales with the
+        # full horizon (n_windows), not just BPTT_WINDOW, even though the
+        # differentiable chain itself is short. remat instead recomputes
+        # each window's forward pass during the backward pass rather than
+        # storing it, trading extra compute for peak memory that no
+        # longer scales with horizon length. Necessary to fit the longer
+        # horizons multi-meter goals need (and the extra memory the
+        # multi-iteration solver patch itself uses) in limited device
+        # memory (confirmed OOM without this at batch=4, horizon=7000
+        # trying to allocate ~30GB; with it, the same horizon should need
+        # a small, roughly constant amount of memory per window instead).
         (data, prev_action, prev_prev_action, prev_goal_dist, total_return,
          global_discount, min_obstacle_dist_seen, value_loss, done) = carry
 
