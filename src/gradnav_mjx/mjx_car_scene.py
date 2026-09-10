@@ -27,7 +27,7 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
         <joint name="steer_fl" type="hinge" axis="0 0 1" range="-0.6 0.6"/>
         <geom name="knuckle_fl_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fl_spin">
-          <joint name="spin_fl" type="hinge" axis="0 1 0"/>
+          <joint name="spin_fl" type="hinge" axis="0 1 0" damping="0.001"/>
           <geom name="wheel_fl_geom" type="capsule" size="0.05" fromto="0 -0.0215 0 0 0.0215 0" mass="0.1" rgba="0.1 0.1 0.1 1"/>
         </body>
       </body>
@@ -35,16 +35,16 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
         <joint name="steer_fr" type="hinge" axis="0 0 1" range="-0.6 0.6"/>
         <geom name="knuckle_fr_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fr_spin">
-          <joint name="spin_fr" type="hinge" axis="0 1 0"/>
+          <joint name="spin_fr" type="hinge" axis="0 1 0" damping="0.001"/>
           <geom name="wheel_fr_geom" type="capsule" size="0.05" fromto="0 -0.0215 0 0 0.0215 0" mass="0.1" rgba="0.1 0.1 0.1 1"/>
         </body>
       </body>
       <body name="wheel_rl" pos="-0.1483 0.115 -0.05">
-        <joint name="spin_rl" type="hinge" axis="0 1 0"/>
+        <joint name="spin_rl" type="hinge" axis="0 1 0" damping="0.001"/>
         <geom name="wheel_rl_geom" type="capsule" size="0.05" fromto="0 -0.0215 0 0 0.0215 0" mass="0.1" rgba="0.1 0.1 0.1 1"/>
       </body>
       <body name="wheel_rr" pos="-0.1483 -0.115 -0.05">
-        <joint name="spin_rr" type="hinge" axis="0 1 0"/>
+        <joint name="spin_rr" type="hinge" axis="0 1 0" damping="0.001"/>
         <geom name="wheel_rr_geom" type="capsule" size="0.05" fromto="0 -0.0215 0 0 0.0215 0" mass="0.1" rgba="0.1 0.1 0.1 1"/>
       </body>
     </body>
@@ -56,6 +56,24 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
 
   <actuator>
     <motor name="steer" joint="steer_fl" gear="1" ctrlrange="-1 1"/>
+    <!-- Root cause of the car's earlier crawl-speed (~0.11-0.21 m/s):
+         the <default><joint damping="0.05"/></default> block applied to
+         EVERY joint, including the drive wheels' spin joints -- so the
+         wheels had a phantom viscous brake resisting spin, capping wheel
+         angular velocity (and hence car speed) regardless of available
+         torque or tire grip (a slip-ratio diagnostic confirmed slip was
+         only ~10%, ruling out a traction/grip problem). Real drivetrains
+         have no such damping. Explicit damping="0.001" on each spin_*
+         joint below overrides the blanket default. Combined with raising
+         QVEL_CLAMP (train_diffmjx_final.py) from 15.0 to 40.0 -- which
+         was independently capping wheel angular velocity at 15 rad/s
+         (0.75 m/s wheel-surface speed), a leftover from when speeds were
+         much lower and NaN-safety was the only concern -- an open-loop
+         full-throttle test now reaches 1-3 m/s, matching the real
+         MuSHR hardware's actual speed range. gear=0.78 (traction-limited
+         torque matching mu=2.0, the real MuSHR tire friction spec from
+         racecar.urdf) is unchanged and still correct -- the bottleneck
+         was never torque or grip, only this spin-joint damping. -->
     <motor name="throttle_rl" joint="spin_rl" gear="0.78" ctrlrange="-1 1"/>
     <motor name="throttle_rr" joint="spin_rr" gear="0.78" ctrlrange="-1 1"/>
   </actuator>

@@ -70,7 +70,7 @@ from jax_reward import jax_reward
 
 
 CAR_RADIUS = 0.24
-QVEL_CLAMP = 15.0
+QVEL_CLAMP = 40.0
 
 
 def adam_init(params):
