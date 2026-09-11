@@ -42,15 +42,25 @@ def jax_reward(
     the action (~0-2) and obstacle (~0-2) penalty terms. The actual
     "get closer to the goal" signal was being drowned out by everything
     else; 400x brings it back to a comparable scale (~0.4-1.2).
+
+    progress weight 400.0 -> 150.0: the car's real cruise speed used to
+    be ~0.11-0.21 m/s (a joint-damping bug on the drive wheels was
+    silently braking them); fixing that bug raised real speed to
+    1-3 m/s. Per-step position delta scales with speed, so at 400.0 the
+    progress term's contribution grew to ~0.8-2.4 (average speed) and up
+    to ~4.8 at burst/peak speed -- well above the ~0.4-1.2 target range
+    400.0 was originally tuned for, again risking one term dominating
+    the others. 150.0 brings typical-speed contribution back to
+    ~0.3-0.9, back in range.
     """
     if weights is None:
         weights = dict(
             survival=0.5,
-            action=-1.0,
+            action=-0.1,
             action_rate=-1.0,
             smoothness=-1.0,
             yaw_alignment=0.25,
-            progress=400.0,
+            progress=150.0,
             precision=1.0,
             obstacle=1.0,
             out_of_map=-2.0,
