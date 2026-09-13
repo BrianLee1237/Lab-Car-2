@@ -364,17 +364,30 @@ def evaluate_fixed_benchmark(mjx_model, policy_params, value_params, walls, hori
     eval_chunk: if set, evaluates in batches of this size sequentially
     instead of one big vmap -- necessary at long horizons where a full
     n_eval-sized batch can exceed available device memory during the
-    forward pass (observed OOM at n_eval=300, horizon=14000)."""
+    forward pass (observed OOM at n_eval=300, horizon=14000).
+
+    The per-chunk call is wrapped in its own jax.jit so XLA compiles it
+    ONCE and reuses that compiled program across every chunk (all chunks
+    share the same shape). Without this, calling the un-jitted
+    batched_loss n_eval/eval_chunk times each re-traces and re-compiles
+    the whole nested-scan/vmap program from scratch -- at long horizons
+    (e.g. 6000+) that repeated compilation exhausted host compile memory
+    and crashed with "LLVM ERROR: Unable to allocate section memory!"
+    after just ~30 chunks (n_eval=300, eval_chunk=10)."""
     g = jax.random.PRNGKey(999)
     goals = sample_goals(g, n_eval, min_dist, max_dist)
     if eval_chunk is None:
         eval_chunk = n_eval
+
+    chunk_fn = jax.jit(
+        lambda goals_chunk: batched_loss(
+            mjx_model, policy_params, value_params, value_params, walls, goals_chunk, horizon
+        )
+    )
     final_dists_chunks, min_obs_chunks = [], []
     for i in range(0, n_eval, eval_chunk):
         chunk_goals = goals[i:i + eval_chunk]
-        _, cfd, cmo, _, _ = batched_loss(
-            mjx_model, policy_params, value_params, value_params, walls, chunk_goals, horizon
-        )
+        _, cfd, cmo, _, _ = chunk_fn(chunk_goals)
         final_dists_chunks.append(cfd)
         min_obs_chunks.append(cmo)
     final_dists = jnp.concatenate(final_dists_chunks)
