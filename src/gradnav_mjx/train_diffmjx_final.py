@@ -98,8 +98,14 @@ def get_car_xy_heading(data):
     return x, y, theta
 
 
-OBS_DIST_SCALE = 5.0
+OBS_DIST_SCALE = 12.0
 OBS_V_SCALE = 3.0
+# OBS_DIST_SCALE was 5.0, tuned when goals were 0.3-1m. Any goal_dx/goal_dy
+# beyond the scale is hard-clipped, so at 4-8m goals the normalized input
+# saturates to exactly +-1.0 and the network can no longer tell a 5m goal
+# from a 6m or 20m one -- this was silently destroying the signal in
+# exactly the far-goal regime the SAC 6m curriculum run needed. 12.0
+# comfortably covers goal_dx/goal_dy up to an 8m goal at any angle.
 
 
 def build_obs(data, goal, walls):
