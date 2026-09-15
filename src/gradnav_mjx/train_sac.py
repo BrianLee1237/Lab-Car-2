@@ -219,25 +219,34 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
         data = mjx.make_data(mjx_model)
 
         def step(carry, _):
-            data, min_dist_seen = carry
+            data, min_dist_seen, min_obs_seen = carry
             obs, x, y, theta, obstacle_d = build_obs(data, goal, walls)
             action = deterministic_action(policy_params, obs)
             ctrl = jnp.array([action[0], action[1], action[1]])
             data = data.replace(ctrl=ctrl)
             data = mjx.step(mjx_model, data)
             data = data.replace(qvel=jnp.clip(data.qvel, -QVEL_CLAMP, QVEL_CLAMP))
-            min_dist_seen = jnp.minimum(min_dist_seen, jnp.min(obstacle_d))
-            return (data, min_dist_seen), None
+            _, x2, y2, _, _ = build_obs(data, goal, walls)
+            goal_dist = jnp.sqrt((goal[0] - x2) ** 2 + (goal[1] - y2) ** 2)
+            min_dist_seen = jnp.minimum(min_dist_seen, goal_dist)
+            min_obs_seen = jnp.minimum(min_obs_seen, jnp.min(obstacle_d))
+            return (data, min_dist_seen, min_obs_seen), None
 
         init_dist = jnp.sqrt(goal[0] ** 2 + goal[1] ** 2)
-        (data, min_obs_dist), _ = jax.lax.scan(step, (data, jnp.array(jnp.inf)), None, length=horizon)
-        _, x, y, _, _ = build_obs(data, goal, walls)
-        final_dist = jnp.sqrt((goal[0] - x) ** 2 + (goal[1] - y) ** 2)
-        return final_dist, min_obs_dist
+        (data, min_dist_seen, min_obs_dist), _ = jax.lax.scan(
+            step, (data, init_dist, jnp.array(jnp.inf)), None, length=horizon
+        )
+        return min_dist_seen, min_obs_dist
 
-    final_dists, min_obs_dists = jax.vmap(rollout_one)(goals)
-    success = jnp.mean(final_dists < SUCCESS_DIST)
-    mean_dist = jnp.mean(final_dists)
+    min_dists, min_obs_dists = jax.vmap(rollout_one)(goals)
+    # match training's actual success semantics: did the car ever get
+    # within SUCCESS_DIST, not just where it happened to be at the very
+    # last timestep (the old final-position-only check was undercounting
+    # real successes whenever the car reached the goal then drove past it
+    # with no stopping/holding behavior, since nothing in training
+    # rewards *staying* at the goal once reached).
+    success = jnp.mean(min_dists < SUCCESS_DIST)
+    mean_dist = jnp.mean(min_dists)
     collisions = jnp.sum(min_obs_dists < CAR_RADIUS)
     return mean_dist, collisions, success
 
