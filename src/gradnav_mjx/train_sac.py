@@ -46,6 +46,7 @@ from train_diffmjx_final import (
 )
 
 SUCCESS_DIST = 0.5
+REWARD_SCALE = 0.05
 
 
 def make_fresh_data(mjx_model):
@@ -87,6 +88,18 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
             jnp.array([x2, y2]), theta2, action, prev_action_i, prev_prev_action_i,
             goal_i, obstacle_d2, prev_goal_dist,
         )
+        # jax_reward's weights (progress=150.0 especially) were tuned for
+        # DiffRL's short truncated-BPTT window (32 steps), where returns
+        # never accumulate far. SAC bootstraps the full discounted return
+        # (gamma=0.99 -> ~100-step effective horizon), so unscaled this
+        # blows Q-targets up to a range the small critic MLP can't fit,
+        # and the actor collapses to saturated, input-independent actions
+        # chasing the miscalibrated critic (confirmed via trajectory
+        # trace: steer/throttle pinned near +-0.95 regardless of goal).
+        # SAC's own paper (Haarnoja et al. 2018, Table 1) calls this out
+        # as "reward scale", a per-environment hyperparameter -- scaling
+        # down here keeps Q-magnitudes in a range the critic can track.
+        reward = reward * REWARD_SCALE
 
         success = goal_dist2 < SUCCESS_DIST
         timeout = (step_count_i + 1) >= horizon
