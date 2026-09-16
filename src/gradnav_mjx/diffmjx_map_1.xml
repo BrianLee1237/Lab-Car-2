@@ -1,15 +1,4 @@
-STEER_RANGE = 0.6  # rad; matches the steer joints' mechanical range
 
-
-def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
-    wall_geoms = ""
-    for i, (x1, y1, x2, y2, r) in enumerate(walls):
-        wall_geoms += (
-            f'    <geom name="wall_{i}" type="capsule" size="{r}" '
-            f'fromto="{x1} {y1} 0.2 {x2} {y2} 0.2" rgba="0.5 0.5 0.5 1"/>\n'
-        )
-
-    xml = f"""
 <mujoco model="ackermann_car_scene">
   <compiler angle="radian"/>
   <option timestep="0.002" gravity="0 0 -9.81" iterations="4" cone="pyramidal"/>
@@ -20,14 +9,18 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
   </default>
 
   <worldbody>
-    <geom name="floor" type="plane" size="{arena_size} {arena_size} 0.1" rgba="0.3 0.3 0.3 1"/>
-{wall_geoms}
+    <geom name="floor" type="plane" size="8.0 8.0 0.1" rgba="0.3 0.3 0.3 1"/>
+    <geom name="wall_0" type="capsule" size="0.1" fromto="0.5646793996179851 -2.2043787683452045 0.2 4.183263741961067 -2.2043787683452045 0.2" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_1" type="capsule" size="0.1" fromto="0.05247292351894384 2.598510160219618 0.2 2.676200585490789 2.598510160219618 0.2" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_2" type="capsule" size="0.1" fromto="2.236451589626319 -0.6050963888545198 0.2 3.807320280931335 -0.6050963888545198 0.2" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_3" type="capsule" size="0.1" fromto="1.6812587490609485 -4.2246901526980185 0.2 5.544435487945755 -4.2246901526980185 0.2" rgba="0.5 0.5 0.5 1"/>
+
     <body name="chassis" pos="0 0 0.1">
       <freejoint name="chassis_free"/>
       <geom name="chassis_geom" type="capsule" size="0.09" fromto="-0.15 0 0 0.15 0 0" mass="3.0" rgba="0.8 0.1 0.1 1"/>
 
       <body name="wheel_fl" pos="0.1483 0.115 -0.05">
-        <joint name="steer_fl" type="hinge" axis="0 0 1" range="-{STEER_RANGE} {STEER_RANGE}" limited="true" damping="1.0"/>
+        <joint name="steer_fl" type="hinge" axis="0 0 1" range="-0.6 0.6"/>
         <geom name="knuckle_fl_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fl_spin">
           <joint name="spin_fl" type="hinge" axis="0 1 0" damping="0.001"/>
@@ -35,7 +28,7 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
         </body>
       </body>
       <body name="wheel_fr" pos="0.1483 -0.115 -0.05">
-        <joint name="steer_fr" type="hinge" axis="0 0 1" range="-{STEER_RANGE} {STEER_RANGE}" limited="true" damping="1.0"/>
+        <joint name="steer_fr" type="hinge" axis="0 0 1" range="-0.6 0.6"/>
         <geom name="knuckle_fr_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fr_spin">
           <joint name="spin_fr" type="hinge" axis="0 1 0" damping="0.001"/>
@@ -58,26 +51,7 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
   </equality>
 
   <actuator>
-    <!-- Steering is a POSITION servo (commanded angle), not a torque
-         motor. It was <motor gear="1" ctrlrange="-1 1"/>, which applies
-         TORQUE to the steering hinge: the near-inertialess knuckle just
-         integrated that torque straight into the joint limit, so the
-         command had almost no proportional authority. Measured directly
-         (steer_check.py): steer commands spanning 0.05 to 1.0 -- a 20x
-         range -- all settled to essentially the same steering angle
-         (0.79-0.90 rad) and the same turn radius (0.52m vs 0.47m), and
-         the angle blew past the +-0.6 rad mechanical range because a
-         soft limit constraint cannot hold against that torque. The
-         policy therefore had effectively BINARY steering (hard left /
-         hard right) with no way to steer gently -- which is why
-         trajectories curved hard, spiralled, overshot, and could never
-         make a fine final approach, and why even a proportional oracle
-         controller only reached 40%: its computed steering angle was
-         being ignored. The real MuSHR car steers with a servo commanded
-         to an angle, so a position actuator is also the more faithful
-         model. ctrlrange is in radians and matches the joint range;
-         callers scale their [-1,1] action by STEER_RANGE. -->
-    <position name="steer" joint="steer_fl" kp="80" ctrlrange="-{STEER_RANGE} {STEER_RANGE}" forcerange="-20 20"/>
+    <motor name="steer" joint="steer_fl" gear="1" ctrlrange="-1 1"/>
     <!-- Root cause of the car's earlier crawl-speed (~0.11-0.21 m/s):
          the <default><joint damping="0.05"/></default> block applied to
          EVERY joint, including the drive wheels' spin joints -- so the
@@ -100,16 +74,3 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
     <motor name="throttle_rr" joint="spin_rr" gear="0.78" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
-"""
-    with open(out_path, "w") as f:
-        f.write(xml)
-    return out_path
-
-
-def default_walls():
-    return [
-        (2.0, -2.0, 2.0, 2.0, 0.1),
-        (-2.0, 1.0, 1.0, 1.0, 0.1),
-        (-1.0, -3.0, -1.0, -1.0, 0.1),
-        (3.0, 3.0, 5.0, 3.0, 0.1),
-    ]

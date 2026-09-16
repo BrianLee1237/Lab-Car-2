@@ -52,14 +52,28 @@ def jax_reward(
     400.0 was originally tuned for, again risking one term dominating
     the others. 150.0 brings typical-speed contribution back to
     ~0.3-0.9, back in range.
+
+    yaw_alignment 0.25 -> 2.0, action_rate/smoothness -1.0 -> -0.3: a
+    trajectory trace showed the car's heading drifting continuously in
+    one direction for the entire episode (steer held at a persistent
+    nonzero value, theta climbing unboundedly) instead of straightening
+    out toward the goal -- driving in a slow spiral rather than a
+    beeline, which (consistent with the fixed-steer calibration test)
+    bleeds off almost all forward speed the longer it continues. The
+    reward term that should counteract this (yaw_alignment, rewarding
+    facing the goal) was weak relative to the penalties for *changing*
+    steering (action_rate, smoothness), so holding a constant, wrong
+    heading was cheaper than correcting it. Strengthening yaw_alignment
+    and softening the change-penalties should make active heading
+    correction worth it again.
     """
     if weights is None:
         weights = dict(
             survival=0.5,
             action=-0.1,
-            action_rate=-1.0,
-            smoothness=-1.0,
-            yaw_alignment=0.25,
+            action_rate=-0.3,
+            smoothness=-0.3,
+            yaw_alignment=2.0,
             progress=150.0,
             precision=1.0,
             obstacle=1.0,

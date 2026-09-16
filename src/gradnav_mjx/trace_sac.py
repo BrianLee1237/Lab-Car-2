@@ -9,7 +9,7 @@ import mujoco.mjx as mjx
 import mjx_solver_patch
 mjx_solver_patch.apply()
 
-from mjx_car_scene import build_car_scene_xml
+from mjx_car_scene import build_car_scene_xml, STEER_RANGE
 from mjx_random_maps import generate_map_set
 from jax_sac_networks import deterministic_action
 from train_diffmjx_final import get_car_xy_heading, QVEL_CLAMP
@@ -36,7 +36,7 @@ policy_params = [(jnp.array(ckpt[f"p{i}_W"]), jnp.array(ckpt[f"p{i}_b"])) for i 
 def step_fn(data, goal, prev_action, prev_prev_action):
     obs, x, y, theta, obstacle_d = build_obs_sac(data, goal, walls, prev_action, prev_prev_action)
     action = deterministic_action(policy_params, obs)
-    ctrl = jnp.array([action[0], action[1], action[1]])
+    ctrl = jnp.array([STEER_RANGE * action[0], action[1], action[1]])
 
     def repeat_body(d, _):
         d = d.replace(ctrl=ctrl)

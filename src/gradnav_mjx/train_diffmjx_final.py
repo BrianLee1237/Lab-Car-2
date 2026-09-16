@@ -62,7 +62,7 @@ import mujoco.mjx as mjx
 import mjx_solver_patch
 mjx_solver_patch.apply()
 
-from mjx_car_scene import build_car_scene_xml
+from mjx_car_scene import build_car_scene_xml, STEER_RANGE
 from mjx_random_maps import generate_map_set
 from mjx_obstacle_dist import wall_distances
 from jax_networks import init_policy_params, policy_forward, init_value_params, value_forward
@@ -178,7 +178,7 @@ def rollout(mjx_model, policy_params, value_params, target_value_params, walls, 
 
         obs, x, y, theta, obstacle_d = build_obs(data, goal, walls)
         action = policy_forward(policy_params, obs)
-        ctrl = jnp.array([action[0], action[1], action[1]])
+        ctrl = jnp.array([STEER_RANGE * action[0], action[1], action[1]])
         ctrl = jnp.where(done, jnp.zeros_like(ctrl), ctrl)
         prev_data = data
         data = data.replace(ctrl=ctrl)

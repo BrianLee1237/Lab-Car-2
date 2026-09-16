@@ -35,7 +35,7 @@ import mujoco.mjx as mjx
 import mjx_solver_patch
 mjx_solver_patch.apply()
 
-from mjx_car_scene import build_car_scene_xml
+from mjx_car_scene import build_car_scene_xml, STEER_RANGE
 from mjx_random_maps import generate_map_set
 from mjx_obstacle_dist import wall_distances
 from jax_reward import jax_reward
@@ -88,6 +88,28 @@ TIME_COST = -0.005       # per decision; discounted sum ~ -0.5
 OBS_WALL_SCALE = 5.0
 OBS_V_SCALE = 3.0
 OBS_GOAL_DIST_SCALE = 8.0
+
+
+def sample_goals_cone(key, n, min_dist, max_dist, cone):
+    """Goals in a forward cone of half-angle `cone`, not uniformly over
+    all 360 degrees like train_diffmjx_final.sample_goals.
+
+    The car is Ackermann-steered with a measured minimum turning radius
+    of ~0.6m slow and ~1.9m at speed. Sampling goals uniformly in every
+    direction at 0.3-2.0m therefore places a large share of them INSIDE
+    the car's own turning circle -- a goal 0.7m directly to the side
+    cannot be reached by any single arc and needs a multi-point turn.
+    A hand-written controller with speed modulation and reversing
+    (oracle_check.py) tops out at 53% under that sampling, so the
+    learner was being scored against a ~50% ceiling for reasons that
+    had nothing to do with learning. The same controller reaches 97%
+    on a +-60 degree forward cone at 1.0-3.0m -- which is also the
+    realistic hardware scenario, with the goal ahead of the car.
+    """
+    ang_key, dist_key = jax.random.split(key)
+    ang = jax.random.uniform(ang_key, (n,), minval=-cone, maxval=cone)
+    dist = jax.random.uniform(dist_key, (n,), minval=min_dist, maxval=max_dist)
+    return jnp.stack([dist * jnp.cos(ang), dist * jnp.sin(ang)], axis=-1)
 
 
 def make_fresh_data(mjx_model):
@@ -161,7 +183,7 @@ def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
 
 
 def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_dist, max_dist,
-                      gamma, fresh_data, action_repeat):
+                      gamma, fresh_data, action_repeat, goal_cone):
     """states: dict of batched arrays (leading dim N_ENVS):
        data (mjx.Data pytree), goal (N,2), prev_action (N,2),
        prev_prev_action (N,2), step_count (N,)
@@ -186,7 +208,7 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         prev_goal_dist = jnp.sqrt((goal_i[0] - x) ** 2 + (goal_i[1] - y) ** 2 + 1e-9)
 
         action, _ = sample_action(policy_params, obs, act_key_i)
-        ctrl = jnp.array([action[0], action[1], action[1]])
+        ctrl = jnp.array([STEER_RANGE * action[0], action[1], action[1]])
 
         # Action repeat. The physics timestep is 0.002s, so one action per
         # physics step meant a decision rate of 500Hz -- two separate
@@ -235,7 +257,7 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         reward = reward + TIME_COST + jnp.where(success, TERMINAL_BONUS, 0.0)
 
         dist_key, angle_key = jax.random.split(goal_key_i)
-        angle = jax.random.uniform(angle_key, (), minval=0, maxval=2 * jnp.pi)
+        angle = jax.random.uniform(angle_key, (), minval=-goal_cone, maxval=goal_cone)
         dist = jax.random.uniform(dist_key, (), minval=min_dist, maxval=max_dist)
         new_goal_sample = jnp.array([dist * jnp.cos(angle), dist * jnp.sin(angle)])
 
@@ -357,9 +379,9 @@ def sac_update(policy_params, q1_params, q2_params, q1_target, q2_target, log_al
 
 
 def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max_dist,
-                  action_repeat, seed=999):
+                  action_repeat, goal_cone, seed=999):
     g = jax.random.PRNGKey(seed)
-    goals = sample_goals(g, n_eval, min_dist, max_dist)
+    goals = sample_goals_cone(g, n_eval, min_dist, max_dist, goal_cone)
 
     def rollout_one(goal):
         data = mjx.make_data(mjx_model)
@@ -370,7 +392,7 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
                 data, goal, walls, prev_action, prev_prev_action
             )
             action = deterministic_action(policy_params, obs)
-            ctrl = jnp.array([action[0], action[1], action[1]])
+            ctrl = jnp.array([STEER_RANGE * action[0], action[1], action[1]])
 
             def repeat_body(d, _):
                 d = d.replace(ctrl=ctrl)
@@ -434,7 +456,13 @@ def main():
                               "(UTD ratio ~1) -- with n_envs parallel envs collecting "
                               "n_envs transitions per iteration, that means n_envs updates "
                               "per iteration, not 1.")
-    parser.add_argument("--max-dist", type=float, default=2.0)
+    parser.add_argument("--max-dist", type=float, default=3.0)
+    parser.add_argument("--min-dist", type=float, default=1.0)
+    parser.add_argument("--goal-cone", type=float, default=1.05,
+                         help="half-angle (rad) of the forward cone goals are drawn "
+                              "from. ~1.05 = +-60 deg. pi would be all directions, "
+                              "which puts many goals inside the car's minimum turning "
+                              "circle (see sample_goals_cone).")
     parser.add_argument("--n-walls", type=int, default=4)
     parser.add_argument("--eval-every", type=int, default=2000)
     parser.add_argument("--eval-n", type=int, default=30)
@@ -469,7 +497,7 @@ def main():
     env_step_jit = jax.jit(
         lambda policy_params, states, key, min_dist, max_dist: env_step_batched(
             policy_params, mjx_model, walls, states, key, args.horizon, min_dist, max_dist,
-            args.gamma, fresh_data, args.action_repeat
+            args.gamma, fresh_data, args.action_repeat, args.goal_cone
         )
     )
     sac_update_jit = jax.jit(
@@ -478,14 +506,16 @@ def main():
     )
     eval_jit = jax.jit(
         lambda pp, min_dist, max_dist: evaluate_sac(
-            pp, mjx_model, walls, args.horizon, args.eval_n, min_dist, max_dist, args.action_repeat
+            pp, mjx_model, walls, args.horizon, args.eval_n, min_dist, max_dist,
+            args.action_repeat, args.goal_cone
         )
     )
 
     n_envs = args.n_envs
     states = {
         "data": jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, (n_envs,) + x.shape), fresh_data),
-        "goal": sample_goals(jax.random.PRNGKey(args.seed + 1), n_envs, 0.3, 0.5),
+        "goal": sample_goals_cone(jax.random.PRNGKey(args.seed + 1), n_envs,
+                                   args.min_dist, args.min_dist + 0.3, args.goal_cone),
         "prev_action": jnp.zeros((n_envs, 2)),
         "prev_prev_action": jnp.zeros((n_envs, 2)),
         "step_count": jnp.zeros((n_envs,), dtype=jnp.int32),
@@ -499,7 +529,8 @@ def main():
     it = 0
     while total_env_steps < args.total_steps:
         progress = min(1.0, total_env_steps / (args.total_steps * 0.7))
-        min_dist, max_dist = curriculum_goal_range(progress, args.max_dist)
+        max_dist = args.min_dist + progress * (args.max_dist - args.min_dist)
+        min_dist = args.min_dist
 
         key, step_key = jax.random.split(key)
         states, transitions = env_step_jit(policy_params, states, step_key, min_dist, max_dist)
@@ -521,10 +552,10 @@ def main():
                 )
 
         if total_env_steps % args.eval_every < n_envs:
-            eval_dist, eval_collisions, eval_success = eval_jit(policy_params, 0.3, args.max_dist)
+            eval_dist, eval_collisions, eval_success = eval_jit(policy_params, args.min_dist, args.max_dist)
             eval_success_f = float(eval_success)
             alpha_display = float(jnp.exp(log_alpha))
-            print(f"steps {total_env_steps:7d}  progress={progress:.2f}  goal_range=[0.3,{max_dist:.1f}]  "
+            print(f"steps {total_env_steps:7d}  progress={progress:.2f}  goal_range=[{min_dist:.1f},{max_dist:.1f}]  "
                   f"alpha={alpha_display:.3f}  buffer={buffer.size}  "
                   f"EVAL_dist={float(eval_dist):.3f}  EVAL_success={eval_success_f*100:.0f}%  "
                   f"EVAL_collisions={int(eval_collisions)}/{args.eval_n}")
@@ -536,7 +567,7 @@ def main():
                 print(f"         -> new best checkpoint (success={best_success*100:.0f}%) saved")
 
     print(f"\nDone. Best checkpoint: success={best_success*100:.0f}%")
-    eval_dist, eval_collisions, eval_success = eval_jit(policy_params, 0.3, args.max_dist)
+    eval_dist, eval_collisions, eval_success = eval_jit(policy_params, args.min_dist, args.max_dist)
     print(f"LARGE-SAMPLE final eval: success={float(eval_success)*100:.1f}%  mean_dist={float(eval_dist):.3f}")
     np.savez("sac_policy_final.npz",
              **{f"p{i}_W": np.array(w) for i, (w, b) in enumerate(policy_params)},

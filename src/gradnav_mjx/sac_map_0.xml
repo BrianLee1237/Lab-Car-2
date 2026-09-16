@@ -1,15 +1,4 @@
-STEER_RANGE = 0.6  # rad; matches the steer joints' mechanical range
 
-
-def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
-    wall_geoms = ""
-    for i, (x1, y1, x2, y2, r) in enumerate(walls):
-        wall_geoms += (
-            f'    <geom name="wall_{i}" type="capsule" size="{r}" '
-            f'fromto="{x1} {y1} 0.2 {x2} {y2} 0.2" rgba="0.5 0.5 0.5 1"/>\n'
-        )
-
-    xml = f"""
 <mujoco model="ackermann_car_scene">
   <compiler angle="radian"/>
   <option timestep="0.002" gravity="0 0 -9.81" iterations="4" cone="pyramidal"/>
@@ -20,14 +9,18 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
   </default>
 
   <worldbody>
-    <geom name="floor" type="plane" size="{arena_size} {arena_size} 0.1" rgba="0.3 0.3 0.3 1"/>
-{wall_geoms}
+    <geom name="floor" type="plane" size="8.0 8.0 0.1" rgba="0.3 0.3 0.3 1"/>
+    <geom name="wall_0" type="capsule" size="0.1" fromto="2.398583307263798 2.0337284440360843 0.2 2.398583307263798 5.249363836602841 0.2" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_1" type="capsule" size="0.1" fromto="2.099853914990823 3.3491733666273955 0.2 5.189168589005797 3.3491733666273955 0.2" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_2" type="capsule" size="0.1" fromto="-0.7962924416313899 3.4828195060890046 0.2 -0.7962924416313899 5.406264723902929 0.2" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_3" type="capsule" size="0.1" fromto="2.9014280355198903 -0.45539319732907124 0.2 5.1992759076431145 -0.45539319732907124 0.2" rgba="0.5 0.5 0.5 1"/>
+
     <body name="chassis" pos="0 0 0.1">
       <freejoint name="chassis_free"/>
       <geom name="chassis_geom" type="capsule" size="0.09" fromto="-0.15 0 0 0.15 0 0" mass="3.0" rgba="0.8 0.1 0.1 1"/>
 
       <body name="wheel_fl" pos="0.1483 0.115 -0.05">
-        <joint name="steer_fl" type="hinge" axis="0 0 1" range="-{STEER_RANGE} {STEER_RANGE}" limited="true" damping="1.0"/>
+        <joint name="steer_fl" type="hinge" axis="0 0 1" range="-0.6 0.6" limited="true" damping="1.0"/>
         <geom name="knuckle_fl_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fl_spin">
           <joint name="spin_fl" type="hinge" axis="0 1 0" damping="0.001"/>
@@ -35,7 +28,7 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
         </body>
       </body>
       <body name="wheel_fr" pos="0.1483 -0.115 -0.05">
-        <joint name="steer_fr" type="hinge" axis="0 0 1" range="-{STEER_RANGE} {STEER_RANGE}" limited="true" damping="1.0"/>
+        <joint name="steer_fr" type="hinge" axis="0 0 1" range="-0.6 0.6" limited="true" damping="1.0"/>
         <geom name="knuckle_fr_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fr_spin">
           <joint name="spin_fr" type="hinge" axis="0 1 0" damping="0.001"/>
@@ -77,7 +70,7 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
          to an angle, so a position actuator is also the more faithful
          model. ctrlrange is in radians and matches the joint range;
          callers scale their [-1,1] action by STEER_RANGE. -->
-    <position name="steer" joint="steer_fl" kp="80" ctrlrange="-{STEER_RANGE} {STEER_RANGE}" forcerange="-20 20"/>
+    <position name="steer" joint="steer_fl" kp="80" ctrlrange="-0.6 0.6" forcerange="-20 20"/>
     <!-- Root cause of the car's earlier crawl-speed (~0.11-0.21 m/s):
          the <default><joint damping="0.05"/></default> block applied to
          EVERY joint, including the drive wheels' spin joints -- so the
@@ -100,16 +93,3 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
     <motor name="throttle_rr" joint="spin_rr" gear="0.78" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
-"""
-    with open(out_path, "w") as f:
-        f.write(xml)
-    return out_path
-
-
-def default_walls():
-    return [
-        (2.0, -2.0, 2.0, 2.0, 0.1),
-        (-2.0, 1.0, 1.0, 1.0, 0.1),
-        (-1.0, -3.0, -1.0, -1.0, 0.1),
-        (3.0, 3.0, 5.0, 3.0, 0.1),
-    ]
