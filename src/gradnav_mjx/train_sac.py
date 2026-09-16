@@ -76,13 +76,19 @@ SAC_REWARD_WEIGHTS = dict(
     action_rate=-0.02,
     smoothness=-0.02,
     yaw_alignment=0.02,  # was 2.0  -- keep as faint shaping, not a standing wage
-    progress=2.0,        # was 150.0 -- +2.0 total per metre closed
+    progress=10.0,       # was 150.0 (DiffRL) -- +10.0 total per metre closed
     precision=0.0,       # was 1.0  -- another standing reward for loitering
     obstacle=0.5,
     out_of_map=-1.0,
 )
-TERMINAL_BONUS = 5.0
-TIME_COST = -0.005       # per decision; discounted sum ~ -0.5
+TERMINAL_BONUS = 20.0
+TIME_COST = -0.02        # per decision
+# Magnitudes matter relative to SAC's entropy bonus alpha*H, not just
+# in absolute terms. An earlier pass set progress=2.0/terminal=5.0 AND
+# slowed alpha's decay 16x; together the entropy term swamped the tiny
+# Q-values, so the policy optimised entropy instead of reward and its
+# MEAN action went to ~0 -- i.e. zero throttle, car motionless, eval
+# mean-closest-distance frozen at exactly the mean initial distance.
 
 # --- Observation, SAC-specific ----------------------------------------
 OBS_WALL_SCALE = 5.0
@@ -458,6 +464,9 @@ def main():
                               "per iteration, not 1.")
     parser.add_argument("--max-dist", type=float, default=3.0)
     parser.add_argument("--min-dist", type=float, default=1.0)
+    parser.add_argument("--alpha-lr-scale", type=float, default=1.0,
+                         help="entropy-temperature lr as a multiple of --lr. "
+                              "1.0 is standard SAC.")
     parser.add_argument("--goal-cone", type=float, default=1.05,
                          help="half-angle (rad) of the forward cone goals are drawn "
                               "from. ~1.05 = +-60 deg. pi would be all directions, "
@@ -502,7 +511,7 @@ def main():
     )
     sac_update_jit = jax.jit(
         lambda *a, **kw: sac_update(*a, gamma=args.gamma, tau=args.tau, target_entropy=target_entropy, lr=args.lr,
-                                     alpha_lr=args.lr / (args.updates_per_step * args.n_envs), **kw)
+                                     alpha_lr=args.lr * args.alpha_lr_scale, **kw)
     )
     eval_jit = jax.jit(
         lambda pp, min_dist, max_dist: evaluate_sac(
