@@ -262,7 +262,13 @@ def main():
     parser.add_argument("--buffer-size", type=int, default=200_000)
     parser.add_argument("--warmup-steps", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--updates-per-step", type=int, default=1)
+    parser.add_argument("--updates-per-step", type=int, default=1,
+                         help="Gradient updates per env transition PER ENV, i.e. total "
+                              "updates each outer iteration = updates_per_step * n_envs. "
+                              "Standard SAC practice is ~1 update per single transition "
+                              "(UTD ratio ~1) -- with n_envs parallel envs collecting "
+                              "n_envs transitions per iteration, that means n_envs updates "
+                              "per iteration, not 1.")
     parser.add_argument("--max-dist", type=float, default=2.0)
     parser.add_argument("--n-walls", type=int, default=4)
     parser.add_argument("--eval-every", type=int, default=2000)
@@ -334,7 +340,7 @@ def main():
         it += 1
 
         if buffer.size >= max(args.warmup_steps, args.batch_size):
-            for _ in range(args.updates_per_step):
+            for _ in range(args.updates_per_step * n_envs):
                 obs_s, action_s, reward_s, next_obs_s, done_s = buffer.sample(args.batch_size, rng)
                 key, upd_key = jax.random.split(key)
                 (policy_params, q1_params, q2_params, q1_target, q2_target, log_alpha,
