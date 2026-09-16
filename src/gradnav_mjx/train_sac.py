@@ -38,6 +38,7 @@ mjx_solver_patch.apply()
 from mjx_car_scene import build_car_scene_xml, STEER_RANGE
 from mjx_random_maps import generate_map_set
 from mjx_obstacle_dist import wall_distances
+from mjx_lidar import lidar_scan
 from jax_reward import jax_reward
 from jax_sac_networks import (
     ACTION_DIM, init_sac_policy_params, init_q_params,
@@ -122,8 +123,10 @@ def make_fresh_data(mjx_model):
     return mjx.make_data(mjx_model)
 
 
-# obs = n_walls wall distances + [vx_b, vy_b, sin, cos, dir_x, dir_y,
-# dist] + prev_action(2) + prev_prev_action(2)
+# obs = N_LIDAR ranges + [vx_b, vy_b, sin, cos, dir_x, dir_y, dist]
+#       + prev_action(2) + prev_prev_action(2)
+N_LIDAR = 16
+LIDAR_MAX_RANGE = 8.0
 OBS_EXTRA_DIM_SAC = 11
 
 
@@ -145,6 +148,14 @@ def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
       magnitude |v|. With only |v| the policy literally cannot tell
       whether it is driving forwards or backwards -- and driving backwards
       away from the goal was one of the dominant observed failures.
+    - Obstacles sensed by a body-frame LIDAR (mjx_lidar) rather than
+      wall_distances' one scalar per wall. Those scalars are
+      directionless and indexed by arbitrary wall ID -- "wall #2 is
+      1.3m away" says nothing about whether it is ahead or behind, so
+      avoidance was effectively impossible (collisions ran 17-40 per 50
+      episodes at 6m goals, vs 0-2 per 50 at 1-2m where the straight
+      path rarely meets a wall). jax_networks.py still defaults to
+      lidar_dim=16, i.e. this is what the original design sensed with.
     - prev_action and prev_prev_action appended. jax_reward's action_rate
       and smoothness terms are functions of both (worth up to ~-2.4), but
       they appeared nowhere in the old observation, so the reward was not
@@ -161,8 +172,12 @@ def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
     vx_b = c * vx_w + s * vy_w
     vy_b = -s * vx_w + c * vy_w
 
+    # Lidar for the OBSERVATION (directional); true wall distances are
+    # still returned for the reward's safety term and collision checks.
     obstacle_d = wall_distances(jnp.array([x, y]), walls)
-    obstacle_d_n = jnp.clip(obstacle_d, 0.0, OBS_WALL_SCALE) / OBS_WALL_SCALE
+    ranges = lidar_scan(jnp.array([x, y]), theta, walls,
+                        n_rays=N_LIDAR, max_range=LIDAR_MAX_RANGE)
+    ranges_n = ranges / LIDAR_MAX_RANGE
 
     dx = goal[0] - x
     dy = goal[1] - y
@@ -174,7 +189,7 @@ def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
     dist_n = jnp.clip(dist, 0.0, OBS_GOAL_DIST_SCALE) / OBS_GOAL_DIST_SCALE
 
     obs = jnp.concatenate([
-        obstacle_d_n,                                                  # 4
+        ranges_n,                                                      # N_LIDAR
         jnp.stack([
             jnp.clip(vx_b, -OBS_V_SCALE, OBS_V_SCALE) / OBS_V_SCALE,   # 1
             jnp.clip(vy_b, -OBS_V_SCALE, OBS_V_SCALE) / OBS_V_SCALE,   # 1
@@ -487,7 +502,7 @@ def main():
 
     key = jax.random.PRNGKey(args.seed)
     pkey, q1key, q2key = jax.random.split(key, 3)
-    obs_dim = args.n_walls + OBS_EXTRA_DIM_SAC
+    obs_dim = N_LIDAR + OBS_EXTRA_DIM_SAC
     policy_params = init_sac_policy_params(pkey, obs_dim)
     q1_params = init_q_params(q1key, obs_dim)
     q2_params = init_q_params(q2key, obs_dim)
