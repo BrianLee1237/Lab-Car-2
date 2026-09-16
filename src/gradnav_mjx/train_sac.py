@@ -16,10 +16,12 @@ interacts badly with truncated-BPTT credit assignment, etc.) at the
 cost of needing many more environment steps to learn from, since it
 doesn't get "free" analytic gradient information the way DiffRL does.
 
-Reuses the same car physics (mjx_car_scene, mjx_solver_patch), the
-same reward function (jax_reward), and the same observation
-construction (build_obs) as the DiffRL pipeline, so results are
-directly comparable -- only the learning algorithm differs.
+Reuses the same car physics (mjx_car_scene, mjx_solver_patch) and the
+same reward *function* (jax_reward) as the DiffRL pipeline, but NOT
+its reward weights or its observation encoding: both were tuned for
+DiffRL's fixed-horizon, freeze-on-success, backprop-through-time setup
+and are actively wrong for an off-policy bootstrapped value learner.
+See SAC_REWARD_WEIGHTS and build_obs_sac for what differs and why.
 """
 
 import argparse
@@ -35,25 +37,131 @@ mjx_solver_patch.apply()
 
 from mjx_car_scene import build_car_scene_xml
 from mjx_random_maps import generate_map_set
+from mjx_obstacle_dist import wall_distances
 from jax_reward import jax_reward
 from jax_sac_networks import (
     ACTION_DIM, init_sac_policy_params, init_q_params,
     sample_action, deterministic_action, q_apply,
 )
 from train_diffmjx_final import (
-    get_car_xy_heading, build_obs, QVEL_CLAMP, CAR_RADIUS,
+    get_car_xy_heading, QVEL_CLAMP, CAR_RADIUS,
     sample_goals, curriculum_goal_range, adam_init, adam_update,
+    clip_tree, sanitize_grads,
 )
 
 SUCCESS_DIST = 0.5
-REWARD_SCALE = 0.05
+
+# --- Reward shaping, SAC-specific -------------------------------------
+# jax_reward's default weights are DiffRL's and must NOT be reused here.
+# DiffRL accumulates a fixed-horizon return and freezes the state on
+# success, so an unconditional positive per-step term is harmless. SAC
+# bootstraps an infinite-horizon value and masks the bootstrap on
+# success (target = r + gamma*(1-done)*Q'), so any standing positive
+# reward makes *reaching the goal* strictly worse than loitering next
+# to it: with survival=+0.5 and yaw_alignment up to +2.0, cruising was
+# worth ~2.6/step forever, i.e. V ~ 2.6/(1-0.99) ~ 260, while touching
+# the goal collapsed the target to the single-step reward ~2.6. The
+# car was correctly optimising a reward that told it never to finish
+# (observed directly: creeping at 0.02-0.04 m/s, goal-facing, for
+# thousands of steps).
+#
+# Correct goal-reaching formulation: no standing bonus, a small per-step
+# time cost so finishing sooner wins, dense progress shaping, and a
+# real terminal bonus on success (DiffRL has TERMINAL_BONUS=50.0; SAC
+# had none at all). progress is a telescoping sum, so its weight is
+# just "reward per metre of distance closed".
+SAC_REWARD_WEIGHTS = dict(
+    survival=0.0,        # was 0.5  -- the "never finish" attractor
+    action=-0.005,
+    action_rate=-0.02,
+    smoothness=-0.02,
+    yaw_alignment=0.02,  # was 2.0  -- keep as faint shaping, not a standing wage
+    progress=2.0,        # was 150.0 -- +2.0 total per metre closed
+    precision=0.0,       # was 1.0  -- another standing reward for loitering
+    obstacle=0.5,
+    out_of_map=-1.0,
+)
+TERMINAL_BONUS = 5.0
+TIME_COST = -0.005       # per decision; discounted sum ~ -0.5
+
+# --- Observation, SAC-specific ----------------------------------------
+OBS_WALL_SCALE = 5.0
+OBS_V_SCALE = 3.0
+OBS_GOAL_DIST_SCALE = 8.0
 
 
 def make_fresh_data(mjx_model):
     return mjx.make_data(mjx_model)
 
 
-def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_dist, max_dist, gamma, fresh_data):
+# obs = n_walls wall distances + [vx_b, vy_b, sin, cos, dir_x, dir_y,
+# dist] + prev_action(2) + prev_prev_action(2)
+OBS_EXTRA_DIM_SAC = 11
+
+
+def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
+    """SAC observation. Deliberately not train_diffmjx_final.build_obs:
+
+    - Goal in BODY frame (unit direction + separate normalized distance)
+      instead of world-frame goal_dx/goal_dy paired with raw heading.
+      World frame forces the network to learn the rotation itself before
+      it can tell left from right; body frame makes "goal is to my left"
+      directly readable, which is the standard goal-conditioned nav
+      encoding. Splitting direction (unit norm) from distance also keeps
+      the direction signal well-scaled at every distance, instead of
+      shrinking toward 0 up close and saturating against the clip far
+      away.
+    - sin/cos of heading instead of theta/pi, which jumps discontinuously
+      from +1 to -1 as theta wraps through pi.
+    - SIGNED body-frame velocity (forward, lateral) instead of the speed
+      magnitude |v|. With only |v| the policy literally cannot tell
+      whether it is driving forwards or backwards -- and driving backwards
+      away from the goal was one of the dominant observed failures.
+    - prev_action and prev_prev_action appended. jax_reward's action_rate
+      and smoothness terms are functions of both (worth up to ~-2.4), but
+      they appeared nowhere in the old observation, so the reward was not
+      a function of (obs, action) alone. DiffRL gets away with it by
+      carrying them in its scan carry and backpropagating the true
+      trajectory; SAC's Q(s,a) structurally cannot fit a reward that
+      depends on hidden state, so that part of every TD target was
+      unlearnable noise.
+    """
+    x, y, theta = get_car_xy_heading(data)
+    c, s = jnp.cos(theta), jnp.sin(theta)
+
+    vx_w, vy_w = data.qvel[0], data.qvel[1]
+    vx_b = c * vx_w + s * vy_w
+    vy_b = -s * vx_w + c * vy_w
+
+    obstacle_d = wall_distances(jnp.array([x, y]), walls)
+    obstacle_d_n = jnp.clip(obstacle_d, 0.0, OBS_WALL_SCALE) / OBS_WALL_SCALE
+
+    dx = goal[0] - x
+    dy = goal[1] - y
+    dist = jnp.sqrt(dx ** 2 + dy ** 2 + 1e-9)
+    bx = c * dx + s * dy
+    by = -s * dx + c * dy
+    dir_x = bx / dist
+    dir_y = by / dist
+    dist_n = jnp.clip(dist, 0.0, OBS_GOAL_DIST_SCALE) / OBS_GOAL_DIST_SCALE
+
+    obs = jnp.concatenate([
+        obstacle_d_n,                                                  # 4
+        jnp.stack([
+            jnp.clip(vx_b, -OBS_V_SCALE, OBS_V_SCALE) / OBS_V_SCALE,   # 1
+            jnp.clip(vy_b, -OBS_V_SCALE, OBS_V_SCALE) / OBS_V_SCALE,   # 1
+            s, c,                                                      # 2
+            dir_x, dir_y,                                              # 2
+            dist_n,                                                    # 1
+        ]),
+        prev_action,                                                   # 2
+        prev_prev_action,                                              # 2
+    ])
+    return obs, x, y, theta, obstacle_d
+
+
+def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_dist, max_dist,
+                      gamma, fresh_data, action_repeat):
     """states: dict of batched arrays (leading dim N_ENVS):
        data (mjx.Data pytree), goal (N,2), prev_action (N,2),
        prev_prev_action (N,2), step_count (N,)
@@ -72,34 +180,45 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
     goal_keys = jax.random.split(goal_key, n_envs)
 
     def single(data_i, goal_i, prev_action_i, prev_prev_action_i, step_count_i, act_key_i, goal_key_i):
-        obs, x, y, theta, obstacle_d = build_obs(data_i, goal_i, walls)
+        obs, x, y, theta, obstacle_d = build_obs_sac(
+            data_i, goal_i, walls, prev_action_i, prev_prev_action_i
+        )
         prev_goal_dist = jnp.sqrt((goal_i[0] - x) ** 2 + (goal_i[1] - y) ** 2 + 1e-9)
 
         action, _ = sample_action(policy_params, obs, act_key_i)
         ctrl = jnp.array([action[0], action[1], action[1]])
-        new_data = data_i.replace(ctrl=ctrl)
-        new_data = mjx.step(mjx_model, new_data)
-        new_data = new_data.replace(qvel=jnp.clip(new_data.qvel, -QVEL_CLAMP, QVEL_CLAMP))
 
-        next_obs, x2, y2, theta2, obstacle_d2 = build_obs(new_data, goal_i, walls)
+        # Action repeat. The physics timestep is 0.002s, so one action per
+        # physics step meant a decision rate of 500Hz -- two separate
+        # problems. (1) gamma=0.99 per decision is an effective horizon of
+        # ~100 decisions = 0.2s, but reaching a goal metres away takes
+        # 2-4s, so the discount could not even represent the task. (2) SAC
+        # explores by sampling an independent Gaussian action every
+        # decision; resampled every 2ms those draws just average out and
+        # the car jitters in place instead of committing to a direction --
+        # consistent with the observed 0.02-0.04 m/s creep. Repeating each
+        # action gives a decision rate near what the real MuSHR controller
+        # runs at (~25Hz at repeat=20), makes gamma=0.99 cover the whole
+        # episode, and cuts transitions-per-second of sim by the same
+        # factor.
+        def repeat_body(d, _):
+            d = d.replace(ctrl=ctrl)
+            d = mjx.step(mjx_model, d)
+            d = d.replace(qvel=jnp.clip(d.qvel, -QVEL_CLAMP, QVEL_CLAMP))
+            return d, None
+
+        new_data, _ = jax.lax.scan(repeat_body, data_i, None, length=action_repeat)
+
+        next_obs, x2, y2, theta2, obstacle_d2 = build_obs_sac(
+            new_data, goal_i, walls, action, prev_action_i
+        )
         goal_dist2 = jnp.sqrt((goal_i[0] - x2) ** 2 + (goal_i[1] - y2) ** 2 + 1e-9)
 
         reward, _ = jax_reward(
             jnp.array([x2, y2]), theta2, action, prev_action_i, prev_prev_action_i,
             goal_i, obstacle_d2, prev_goal_dist,
+            weights=SAC_REWARD_WEIGHTS,
         )
-        # jax_reward's weights (progress=150.0 especially) were tuned for
-        # DiffRL's short truncated-BPTT window (32 steps), where returns
-        # never accumulate far. SAC bootstraps the full discounted return
-        # (gamma=0.99 -> ~100-step effective horizon), so unscaled this
-        # blows Q-targets up to a range the small critic MLP can't fit,
-        # and the actor collapses to saturated, input-independent actions
-        # chasing the miscalibrated critic (confirmed via trajectory
-        # trace: steer/throttle pinned near +-0.95 regardless of goal).
-        # SAC's own paper (Haarnoja et al. 2018, Table 1) calls this out
-        # as "reward scale", a per-environment hyperparameter -- scaling
-        # down here keeps Q-magnitudes in a range the critic can track.
-        reward = reward * REWARD_SCALE
 
         success = goal_dist2 < SUCCESS_DIST
         timeout = (step_count_i + 1) >= horizon
@@ -108,6 +227,12 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         # an artificial cutoff, not a real terminal state, so we still
         # bootstrap through it (standard truncation-vs-termination handling).
         done_for_bootstrap = success
+
+        # Terminal bonus + per-decision time cost. Without the bonus,
+        # zeroing the bootstrap on success makes reaching the goal a pure
+        # loss of future value, so the optimal policy is to approach and
+        # then never touch it. See SAC_REWARD_WEIGHTS.
+        reward = reward + TIME_COST + jnp.where(success, TERMINAL_BONUS, 0.0)
 
         dist_key, angle_key = jax.random.split(goal_key_i)
         angle = jax.random.uniform(angle_key, (), minval=0, maxval=2 * jnp.pi)
@@ -168,7 +293,7 @@ class ReplayBuffer:
 
 def sac_update(policy_params, q1_params, q2_params, q1_target, q2_target, log_alpha,
                 policy_opt, q1_opt, q2_opt, alpha_opt,
-                obs, action, reward, next_obs, done, key, gamma, tau, target_entropy, lr):
+                obs, action, reward, next_obs, done, key, gamma, tau, target_entropy, lr, alpha_lr):
     alpha = jnp.exp(log_alpha)
     key1, key2 = jax.random.split(key)
 
@@ -183,7 +308,16 @@ def sac_update(policy_params, q1_params, q2_params, q1_target, q2_target, log_al
         q2_pred = q_apply(q2_params, obs, action)
         return jnp.mean((q1_pred - target) ** 2) + jnp.mean((q2_pred - target) ** 2)
 
+    # sac_update had no gradient sanitization/clipping at all, unlike
+    # DiffRL's rollout (which needs it because BPTT-through-contact
+    # gradients can blow up to ~1e25). SAC gradients are normally much
+    # better-behaved, but the Q-value miscalibration/actor-saturation
+    # issues already found here show real numerical instability can still
+    # happen (e.g. a bad bootstrap target from an undertrained critic) --
+    # this is cheap insurance against a single bad batch corrupting params.
     critic_loss, (q1_grads, q2_grads) = jax.value_and_grad(critic_loss_fn, argnums=(0, 1))(q1_params, q2_params)
+    q1_grads = clip_tree(sanitize_grads(q1_grads))
+    q2_grads = clip_tree(sanitize_grads(q2_grads))
     q1_params, q1_opt = adam_update(q1_params, q1_grads, q1_opt, lr=lr)
     q2_params, q2_opt = adam_update(q2_params, q2_grads, q2_opt, lr=lr)
 
@@ -196,13 +330,24 @@ def sac_update(policy_params, q1_params, q2_params, q1_target, q2_target, log_al
         return loss, log_prob
 
     (actor_loss, log_prob), policy_grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(policy_params)
+    policy_grads = clip_tree(sanitize_grads(policy_grads))
     policy_params, policy_opt = adam_update(policy_params, policy_grads, policy_opt, lr=lr)
 
     def alpha_loss_fn(log_alpha):
         return -jnp.mean(log_alpha * jax.lax.stop_gradient(log_prob + target_entropy))
 
+    # alpha_lr is independent of the critic/actor lr: when updates_per_step
+    # scales with n_envs (fixing the earlier 16x-too-low UTD ratio), alpha
+    # gets the same 16x more gradient steps per unit of real env experience
+    # as everything else, so it converges to near-zero (killing exploration)
+    # within the first ~10% of a run instead of decaying over the full
+    # curriculum -- confirmed via a run that flatlined at 10% success for
+    # its last 130k/150k steps once alpha collapsed by step 20k. Scaling
+    # alpha's own lr down by the same factor keeps its decay paced to real
+    # env-steps instead of gradient-step count.
     alpha_loss, alpha_grad = jax.value_and_grad(alpha_loss_fn)(log_alpha)
-    log_alpha, alpha_opt = adam_update(log_alpha, alpha_grad, alpha_opt, lr=lr)
+    alpha_grad = sanitize_grads(alpha_grad)
+    log_alpha, alpha_opt = adam_update(log_alpha, alpha_grad, alpha_opt, lr=alpha_lr)
 
     q1_target = jax.tree_util.tree_map(lambda t, s: tau * s + (1 - tau) * t, q1_target, q1_params)
     q2_target = jax.tree_util.tree_map(lambda t, s: tau * s + (1 - tau) * t, q2_target, q2_params)
@@ -211,7 +356,8 @@ def sac_update(policy_params, q1_params, q2_params, q1_target, q2_target, log_al
             policy_opt, q1_opt, q2_opt, alpha_opt, critic_loss, actor_loss, alpha_loss)
 
 
-def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max_dist, seed=999):
+def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max_dist,
+                  action_repeat, seed=999):
     g = jax.random.PRNGKey(seed)
     goals = sample_goals(g, n_eval, min_dist, max_dist)
 
@@ -219,22 +365,31 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
         data = mjx.make_data(mjx_model)
 
         def step(carry, _):
-            data, min_dist_seen, min_obs_seen = carry
-            obs, x, y, theta, obstacle_d = build_obs(data, goal, walls)
+            data, prev_action, prev_prev_action, min_dist_seen, min_obs_seen = carry
+            obs, x, y, theta, obstacle_d = build_obs_sac(
+                data, goal, walls, prev_action, prev_prev_action
+            )
             action = deterministic_action(policy_params, obs)
             ctrl = jnp.array([action[0], action[1], action[1]])
-            data = data.replace(ctrl=ctrl)
-            data = mjx.step(mjx_model, data)
-            data = data.replace(qvel=jnp.clip(data.qvel, -QVEL_CLAMP, QVEL_CLAMP))
-            _, x2, y2, _, _ = build_obs(data, goal, walls)
+
+            def repeat_body(d, _):
+                d = d.replace(ctrl=ctrl)
+                d = mjx.step(mjx_model, d)
+                d = d.replace(qvel=jnp.clip(d.qvel, -QVEL_CLAMP, QVEL_CLAMP))
+                return d, None
+
+            data, _ = jax.lax.scan(repeat_body, data, None, length=action_repeat)
+
+            _, x2, y2, _, obstacle_d2 = build_obs_sac(data, goal, walls, action, prev_action)
             goal_dist = jnp.sqrt((goal[0] - x2) ** 2 + (goal[1] - y2) ** 2)
             min_dist_seen = jnp.minimum(min_dist_seen, goal_dist)
-            min_obs_seen = jnp.minimum(min_obs_seen, jnp.min(obstacle_d))
-            return (data, min_dist_seen, min_obs_seen), None
+            min_obs_seen = jnp.minimum(min_obs_seen, jnp.min(obstacle_d2))
+            return (data, action, prev_action, min_dist_seen, min_obs_seen), None
 
         init_dist = jnp.sqrt(goal[0] ** 2 + goal[1] ** 2)
-        (data, min_dist_seen, min_obs_dist), _ = jax.lax.scan(
-            step, (data, init_dist, jnp.array(jnp.inf)), None, length=horizon
+        carry0 = (data, jnp.zeros(2), jnp.zeros(2), init_dist, jnp.array(jnp.inf))
+        (data, _, _, min_dist_seen, min_obs_dist), _ = jax.lax.scan(
+            step, carry0, None, length=horizon
         )
         return min_dist_seen, min_obs_dist
 
@@ -253,8 +408,18 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--total-steps", type=int, default=50000)
-    parser.add_argument("--horizon", type=int, default=2000)
+    parser.add_argument("--total-steps", type=int, default=50000,
+                         help="Total environment DECISIONS (= replay transitions), "
+                              "not physics steps; each decision advances the sim by "
+                              "action_repeat physics steps.")
+    parser.add_argument("--horizon", type=int, default=150,
+                         help="Episode length in DECISIONS. At action_repeat=20 and a "
+                              "0.002s physics timestep, 150 decisions = 6 seconds of "
+                              "sim time.")
+    parser.add_argument("--action-repeat", type=int, default=20,
+                         help="Physics steps per policy decision. 20 gives a ~25Hz "
+                              "decision rate, close to the real MuSHR controller, and "
+                              "makes gamma=0.99 span the whole episode instead of 0.2s.")
     parser.add_argument("--n-envs", type=int, default=16)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -285,7 +450,7 @@ def main():
 
     key = jax.random.PRNGKey(args.seed)
     pkey, q1key, q2key = jax.random.split(key, 3)
-    obs_dim = args.n_walls + 4
+    obs_dim = args.n_walls + OBS_EXTRA_DIM_SAC
     policy_params = init_sac_policy_params(pkey, obs_dim)
     q1_params = init_q_params(q1key, obs_dim)
     q2_params = init_q_params(q2key, obs_dim)
@@ -303,14 +468,18 @@ def main():
 
     env_step_jit = jax.jit(
         lambda policy_params, states, key, min_dist, max_dist: env_step_batched(
-            policy_params, mjx_model, walls, states, key, args.horizon, min_dist, max_dist, args.gamma, fresh_data
+            policy_params, mjx_model, walls, states, key, args.horizon, min_dist, max_dist,
+            args.gamma, fresh_data, args.action_repeat
         )
     )
     sac_update_jit = jax.jit(
-        lambda *a, **kw: sac_update(*a, gamma=args.gamma, tau=args.tau, target_entropy=target_entropy, lr=args.lr, **kw)
+        lambda *a, **kw: sac_update(*a, gamma=args.gamma, tau=args.tau, target_entropy=target_entropy, lr=args.lr,
+                                     alpha_lr=args.lr / (args.updates_per_step * args.n_envs), **kw)
     )
     eval_jit = jax.jit(
-        lambda pp, min_dist, max_dist: evaluate_sac(pp, mjx_model, walls, args.horizon, args.eval_n, min_dist, max_dist)
+        lambda pp, min_dist, max_dist: evaluate_sac(
+            pp, mjx_model, walls, args.horizon, args.eval_n, min_dist, max_dist, args.action_repeat
+        )
     )
 
     n_envs = args.n_envs
