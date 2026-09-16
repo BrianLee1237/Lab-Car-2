@@ -119,6 +119,62 @@ def sample_goals_cone(key, n, min_dist, max_dist, cone):
     return jnp.stack([dist * jnp.cos(ang), dist * jnp.sin(ang)], axis=-1)
 
 
+SPAWN_HALF = 3.0        # spawn box half-extent (m)
+SPAWN_CLEAR = 0.8       # required clearance from any wall at spawn (m)
+SPAWN_CANDIDATES = 8
+
+
+def sample_spawn_and_goal(key, walls, min_dist, max_dist, cone):
+    """Random start pose + a goal in a cone ahead of THAT pose.
+
+    The car used to spawn at the origin facing +x on every episode, on a
+    single fixed map, with eval on that same map -- so there was no
+    generalization signal at all and the policy could simply memorise one
+    layout. Multi-map training is the obvious fix but MJX bakes each
+    map's geometry into static, hashed model metadata, so every distinct
+    map forces a separate compile, and compilation is the dominant cost
+    here. Randomising the START POSE instead gives the same variety of
+    wall configurations *relative to the car* on one compiled model: a
+    given map looks like a different obstacle course from every pose.
+    It is also closer to the hardware case, where the car does not begin
+    each run at a surveyed origin.
+
+    Spawn is rejection-sampled against the walls (first of
+    SPAWN_CANDIDATES draws with SPAWN_CLEAR clearance; falls back to the
+    first draw if none qualify, which the clearance margin makes rare).
+    """
+    k_pos, k_yaw, k_ang, k_dist = jax.random.split(key, 4)
+
+    cand = jax.random.uniform(k_pos, (SPAWN_CANDIDATES, 2),
+                              minval=-SPAWN_HALF, maxval=SPAWN_HALF)
+    clearance = jnp.min(wall_distances(cand, walls), axis=-1)
+    ok = clearance > SPAWN_CLEAR
+    spawn = cand[jnp.argmax(ok)]
+
+    yaw = jax.random.uniform(k_yaw, (), minval=-jnp.pi, maxval=jnp.pi)
+    ang = jax.random.uniform(k_ang, (), minval=-cone, maxval=cone)
+    dist = jax.random.uniform(k_dist, (), minval=min_dist, maxval=max_dist)
+
+    # goal in the car's frame, then rotated into world coords
+    local = jnp.array([dist * jnp.cos(ang), dist * jnp.sin(ang)])
+    c, s = jnp.cos(yaw), jnp.sin(yaw)
+    goal = spawn + jnp.array([c * local[0] - s * local[1],
+                              s * local[0] + c * local[1]])
+    return spawn, yaw, goal
+
+
+def reset_data_at(fresh_data, spawn, yaw):
+    """fresh_data respawned at (spawn, yaw). qpos layout for the free
+    joint is [x, y, z, qw, qx, qy, qz, ...]; a yaw-only rotation is
+    (cos(yaw/2), 0, 0, sin(yaw/2))."""
+    qpos = fresh_data.qpos
+    qpos = qpos.at[0].set(spawn[0]).at[1].set(spawn[1])
+    qpos = (qpos.at[3].set(jnp.cos(yaw / 2))
+                .at[4].set(0.0).at[5].set(0.0)
+                .at[6].set(jnp.sin(yaw / 2)))
+    return fresh_data.replace(qpos=qpos)
+
+
 def make_fresh_data(mjx_model):
     return mjx.make_data(mjx_model)
 
@@ -277,13 +333,13 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         # then never touch it. See SAC_REWARD_WEIGHTS.
         reward = reward + TIME_COST + jnp.where(success, TERMINAL_BONUS, 0.0)
 
-        dist_key, angle_key = jax.random.split(goal_key_i)
-        angle = jax.random.uniform(angle_key, (), minval=-goal_cone, maxval=goal_cone)
-        dist = jax.random.uniform(dist_key, (), minval=min_dist, maxval=max_dist)
-        new_goal_sample = jnp.array([dist * jnp.cos(angle), dist * jnp.sin(angle)])
+        spawn, yaw, new_goal_sample = sample_spawn_and_goal(
+            goal_key_i, walls, min_dist, max_dist, goal_cone
+        )
+        respawned = reset_data_at(fresh_data, spawn, yaw)
 
         out_data = jax.tree_util.tree_map(
-            lambda f, n: jnp.where(reset, f, n), fresh_data, new_data
+            lambda f, n: jnp.where(reset, f, n), respawned, new_data
         )
         out_goal = jnp.where(reset, new_goal_sample, goal_i)
         out_prev_action = jnp.where(reset, jnp.zeros(2), action)
@@ -402,10 +458,16 @@ def sac_update(policy_params, q1_params, q2_params, q1_target, q2_target, log_al
 def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max_dist,
                   action_repeat, goal_cone, seed=999):
     g = jax.random.PRNGKey(seed)
-    goals = sample_goals_cone(g, n_eval, min_dist, max_dist, goal_cone)
+    # Evaluate from randomized start poses too, matching training. A
+    # fixed-origin eval would only ever score one pose on one map.
+    spawns, yaws, goals = jax.vmap(
+        lambda k: sample_spawn_and_goal(k, walls, min_dist, max_dist, goal_cone)
+    )(jax.random.split(g, n_eval))
 
-    def rollout_one(goal):
-        data = mjx.make_data(mjx_model)
+    fresh = mjx.make_data(mjx_model)
+
+    def rollout_one(spawn, yaw, goal):
+        data = reset_data_at(fresh, spawn, yaw)
 
         def step(carry, _):
             data, prev_action, prev_prev_action, min_dist_seen, min_obs_seen = carry
@@ -429,14 +491,14 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
             min_obs_seen = jnp.minimum(min_obs_seen, jnp.min(obstacle_d2))
             return (data, action, prev_action, min_dist_seen, min_obs_seen), None
 
-        init_dist = jnp.sqrt(goal[0] ** 2 + goal[1] ** 2)
+        init_dist = jnp.sqrt((goal[0] - spawn[0]) ** 2 + (goal[1] - spawn[1]) ** 2)
         carry0 = (data, jnp.zeros(2), jnp.zeros(2), init_dist, jnp.array(jnp.inf))
         (data, _, _, min_dist_seen, min_obs_dist), _ = jax.lax.scan(
             step, carry0, None, length=horizon
         )
         return min_dist_seen, min_obs_dist
 
-    min_dists, min_obs_dists = jax.vmap(rollout_one)(goals)
+    min_dists, min_obs_dists = jax.vmap(rollout_one)(spawns, yaws, goals)
     # match training's actual success semantics: did the car ever get
     # within SUCCESS_DIST, not just where it happened to be at the very
     # last timestep (the old final-position-only check was undercounting
@@ -536,10 +598,14 @@ def main():
     )
 
     n_envs = args.n_envs
+    _init_spawns, _init_yaws, _init_goals = jax.vmap(
+        lambda k: sample_spawn_and_goal(k, walls, args.min_dist,
+                                        args.min_dist + 0.3, args.goal_cone)
+    )(jax.random.split(jax.random.PRNGKey(args.seed + 1), n_envs))
     states = {
-        "data": jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, (n_envs,) + x.shape), fresh_data),
-        "goal": sample_goals_cone(jax.random.PRNGKey(args.seed + 1), n_envs,
-                                   args.min_dist, args.min_dist + 0.3, args.goal_cone),
+        "data": jax.vmap(lambda sp, yw: reset_data_at(fresh_data, sp, yw))(
+            _init_spawns, _init_yaws),
+        "goal": _init_goals,
         "prev_action": jnp.zeros((n_envs, 2)),
         "prev_prev_action": jnp.zeros((n_envs, 2)),
         "step_count": jnp.zeros((n_envs,), dtype=jnp.int32),
