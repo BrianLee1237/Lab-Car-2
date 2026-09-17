@@ -41,10 +41,13 @@ def _ray_circle(o, d, centre, r):
     return jnp.where((disc > 0.0) & (t >= 0.0), t, jnp.inf)
 
 
-def lidar_scan(car_xy, theta, walls, n_rays=16, max_range=8.0, fov=jnp.pi):
+def lidar_scan(car_xy, theta, walls, humans=None, n_rays=16, max_range=8.0, fov=jnp.pi):
     """Ranges along n_rays rays spread over +-fov about the car's heading.
 
-    car_xy: (2,), theta: scalar, walls: (W, 5) as (x1, y1, x2, y2, r).
+    car_xy: (2,), theta: scalar, walls: (W, 5) as (x1, y1, x2, y2, r),
+    humans: (H, 3) as (x, y, r) or None. Humans are sensed as circles,
+    the same footprint the cylinder geoms present in the plane, so a
+    scan returns walls and people together the way a real one would.
     Returns (n_rays,) ranges, clipped to max_range.
     """
     angles = theta + jnp.linspace(-fov, fov, n_rays)
@@ -86,4 +89,12 @@ def lidar_scan(car_xy, theta, walls, n_rays=16, max_range=8.0, fov=jnp.pi):
         t = _ray_circle(o[:, None, :], dr, centre, r)
         best = jnp.minimum(best, t)
 
-    return jnp.clip(jnp.min(best, axis=-1), 0.0, max_range)
+    best = jnp.min(best, axis=-1)
+
+    if humans is not None and humans.shape[0] > 0:
+        hc = humans[:, 0:2][None, :, :]            # (1, H, 2)
+        hr = humans[:, 2][None, :]                 # (1, H)
+        th = _ray_circle(o[:, None, :], d[:, None, :], hc, hr)
+        best = jnp.minimum(best, jnp.min(th, axis=-1))
+
+    return jnp.clip(best, 0.0, max_range)

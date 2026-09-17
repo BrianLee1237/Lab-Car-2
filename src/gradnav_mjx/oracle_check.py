@@ -15,14 +15,22 @@ import mujoco.mjx as mjx
 import mjx_solver_patch
 mjx_solver_patch.apply()
 
-from mjx_car_scene import build_car_scene_xml, STEER_RANGE
-from mjx_random_maps import generate_map_set
-from train_diffmjx_final import get_car_xy_heading, QVEL_CLAMP, sample_goals
+from mjx_car_scene import STEER_RANGE
+from train_diffmjx_final import get_car_xy_heading, QVEL_CLAMP
+from mjx_obstacle_dist import obstacle_distances
+import train_sac as T
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--horizon", type=int, default=150)
 parser.add_argument("--action-repeat", type=int, default=20)
 parser.add_argument("--n-walls", type=int, default=4)
+parser.add_argument("--map-size", type=float, default=6.0)
+parser.add_argument("--map-seed", type=int, default=0)
+parser.add_argument("--room", action="store_true")
+parser.add_argument("--room-size", type=float, default=8.0)
+parser.add_argument("--n-inner", type=int, default=6)
+parser.add_argument("--n-humans", type=int, default=6)
+parser.add_argument("--spawn-half", type=float, default=3.0)
 parser.add_argument("--n-goals", type=int, default=20)
 parser.add_argument("--max-dist", type=float, default=2.0)
 parser.add_argument("--min-dist", type=float, default=0.3)
@@ -33,14 +41,17 @@ parser.add_argument("--throttle", type=float, default=1.0)
 parser.add_argument("--steer-gain", type=float, default=1.0)
 args = parser.parse_args()
 
-walls_list = generate_map_set(n_maps=1, n_walls=args.n_walls, base_seed=0)[0]
-walls = jnp.array(walls_list)
-model = mujoco.MjModel.from_xml_path(build_car_scene_xml(walls_list, out_path="oracle_map.xml"))
-mjx_model = mjx.put_model(model)
+env = T.make_env(args.map_seed, room=args.room, room_size=args.room_size,
+                  n_inner=args.n_inner, n_humans=args.n_humans,
+                  n_walls=args.n_walls, map_size=args.map_size,
+                  spawn_half=args.spawn_half, max_dist=args.max_dist)
+mjx_model, walls = env["mjx_model"], env["walls"]
+ped_params, ped_z = env["ped_params"], env["ped_z"]
 
 
 @jax.jit
-def step_fn(data, goal):
+def step_fn(data, goal, i):
+    t0 = i * args.action_repeat * 0.002
     x, y, theta = get_car_xy_heading(data)
     dx, dy = goal[0] - x, goal[1] - y
     c, s = jnp.cos(theta), jnp.sin(theta)
@@ -65,37 +76,48 @@ def step_fn(data, goal):
     steer = jnp.clip(raw_steer, -STEER_RANGE, STEER_RANGE)
     ctrl = jnp.array([steer, throttle, throttle])
 
-    def repeat_body(d, _):
+    def repeat_body(d, k):
+        d = T._move_peds(d, t0 + k * 0.002, ped_params, ped_z)
         d = d.replace(ctrl=ctrl)
         d = mjx.step(mjx_model, d)
         d = d.replace(qvel=jnp.clip(d.qvel, -QVEL_CLAMP, QVEL_CLAMP))
         return d, None
 
-    data, _ = jax.lax.scan(repeat_body, data, None, length=args.action_repeat)
-    return data, x, y, theta
+    data, _ = jax.lax.scan(repeat_body, data,
+                            jnp.arange(args.action_repeat, dtype=jnp.float32))
+    peds = T._peds_at(t0 + args.action_repeat*0.002, ped_params)
+    clear = jnp.min(obstacle_distances(jnp.array([x, y]), walls, peds))
+    return data, x, y, theta, clear
 
 
-_k1, _k2 = jax.random.split(jax.random.PRNGKey(999))
-_ang = jax.random.uniform(_k1, (args.n_goals,), minval=-args.cone, maxval=args.cone)
-_d = jax.random.uniform(_k2, (args.n_goals,), minval=args.min_dist, maxval=args.max_dist)
-goals = jnp.stack([_d * jnp.cos(_ang), _d * jnp.sin(_ang)], axis=-1)
+spawns, yaws, goals = jax.vmap(
+    lambda k: T.sample_spawn_and_goal(k, walls, args.min_dist, args.max_dist,
+                                       args.cone, env["goal_bound"])
+)(jax.random.split(jax.random.PRNGKey(999), args.n_goals))
+fresh = mjx.make_data(mjx_model)
+n_coll = 0
 n_success = 0
 for i in range(args.n_goals):
     gx, gy = float(goals[i, 0]), float(goals[i, 1])
     goal = jnp.array([gx, gy])
-    data = mjx.make_data(mjx_model)
-    closest = float(np.hypot(gx, gy))
+    data = T.reset_data_at(fresh, spawns[i], yaws[i])
+    closest = float(np.hypot(gx - float(spawns[i,0]), gy - float(spawns[i,1])))
     init = closest
+    min_clear = 9e9
     for t in range(args.horizon):
-        data, x, y, theta = step_fn(data, goal)
+        data, x, y, theta, clear = step_fn(data, goal, float(t))
         gd = float(jnp.sqrt((gx - x) ** 2 + (gy - y) ** 2))
         closest = min(closest, gd)
+        min_clear = min(min_clear, float(clear))
     ok = closest < 0.5
-    n_success += ok
+    hit = min_clear < 0.24
+    n_success += ok; n_coll += hit
     final_v = float(jnp.linalg.norm(data.qvel[:2]))
-    print(f"goal {i:2d}  init_dist={init:.2f}  closest={closest:.3f}  final_v={final_v:.2f}  "
-          f"{'SUCCESS' if ok else 'FAIL'}")
+    print(f"goal {i:2d}  init_dist={init:.2f}  closest={closest:.3f}  "
+          f"min_clear={min_clear:.2f}  {'SUCCESS' if ok else 'FAIL'}"
+          f"{'  COLLIDED' if hit else ''}")
 
-print(f"\nORACLE success: {n_success}/{args.n_goals} = {100*n_success/args.n_goals:.0f}%")
+print(f"\nORACLE success: {n_success}/{args.n_goals} = {100*n_success/args.n_goals:.0f}%"
+      f"   collisions: {n_coll}/{args.n_goals}")
 print(f"(horizon={args.horizon} decisions x {args.action_repeat} steps x 0.002s = "
       f"{args.horizon*args.action_repeat*0.002:.1f}s of sim time)")

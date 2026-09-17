@@ -36,8 +36,13 @@ import mjx_solver_patch
 mjx_solver_patch.apply()
 
 from mjx_car_scene import build_car_scene_xml, STEER_RANGE
-from mjx_random_maps import generate_map_set
-from mjx_obstacle_dist import wall_distances
+from mjx_random_maps import (generate_map_set, generate_room_set,
+                              generate_room_layout)
+from mjx_room_scene import (build_room_scene_xml, HUMAN_HEIGHT,
+                             HUMAN_RADIUS)
+from mjx_pedestrians import (make_patrol_params, pedestrian_circles,
+                              pedestrian_mocap_pos)
+from mjx_obstacle_dist import wall_distances, obstacle_distances
 from mjx_lidar import lidar_scan
 from jax_reward import jax_reward
 from jax_sac_networks import (
@@ -94,6 +99,10 @@ TIME_COST = -0.02        # per decision
 # --- Observation, SAC-specific ----------------------------------------
 OBS_WALL_SCALE = 5.0
 OBS_V_SCALE = 3.0
+# Set from --max-dist in main(): a goal beyond this saturates the
+# distance input to exactly 1.0 and the policy can no longer tell 8m
+# from 14m -- the same clipping bug that silently broke the first 6m
+# attempts, just at a different threshold.
 OBS_GOAL_DIST_SCALE = 8.0
 
 
@@ -119,12 +128,30 @@ def sample_goals_cone(key, n, min_dist, max_dist, cone):
     return jnp.stack([dist * jnp.cos(ang), dist * jnp.sin(ang)], axis=-1)
 
 
-SPAWN_HALF = 3.0        # spawn box half-extent (m)
+SPAWN_HALF = 3.0        # spawn box half-extent (m); overridden in main()
 SPAWN_CLEAR = 0.8       # required clearance from any wall at spawn (m)
+GOAL_CLEAR = 0.6        # required clearance from any wall at the goal (m)
 SPAWN_CANDIDATES = 8
+CONE_FULL_DIST = 3.0    # beyond this, goals may sit in ANY direction
 
 
-def sample_spawn_and_goal(key, walls, min_dist, max_dist, cone):
+def cone_for_distance(dist, cone_min):
+    """Allowed goal bearing half-angle, widening with distance.
+
+    A fixed narrow cone means the car only ever drives roughly straight.
+    A fixed wide one re-creates the unreachability problem: the car's
+    minimum turning radius is ~0.6m slow and ~1.9m at speed, so a NEAR
+    goal off to the side sits inside the turning circle and needs a
+    multi-point turn. That constraint only binds at short range -- a
+    goal several metres away is reachable at any bearing, since the car
+    can simply turn toward it first. So scale the cone with distance:
+    +-cone_min at 1m, all directions by CONE_FULL_DIST. Long goals then
+    genuinely require turning, without making short ones impossible.
+    """
+    return jnp.clip(jnp.pi * dist / CONE_FULL_DIST, cone_min, jnp.pi)
+
+
+def sample_spawn_and_goal(key, walls, min_dist, max_dist, cone, bound=1e9):
     """Random start pose + a goal in a cone ahead of THAT pose.
 
     The car used to spawn at the origin facing +x on every episode, on a
@@ -148,18 +175,27 @@ def sample_spawn_and_goal(key, walls, min_dist, max_dist, cone):
     cand = jax.random.uniform(k_pos, (SPAWN_CANDIDATES, 2),
                               minval=-SPAWN_HALF, maxval=SPAWN_HALF)
     clearance = jnp.min(wall_distances(cand, walls), axis=-1)
-    ok = clearance > SPAWN_CLEAR
-    spawn = cand[jnp.argmax(ok)]
+    spawn = cand[jnp.argmax(clearance > SPAWN_CLEAR)]
 
     yaw = jax.random.uniform(k_yaw, (), minval=-jnp.pi, maxval=jnp.pi)
-    ang = jax.random.uniform(k_ang, (), minval=-cone, maxval=cone)
-    dist = jax.random.uniform(k_dist, (), minval=min_dist, maxval=max_dist)
+    dist = jax.random.uniform(k_dist, (SPAWN_CANDIDATES,),
+                              minval=min_dist, maxval=max_dist)
+    half = cone_for_distance(dist, cone)
+    u = jax.random.uniform(k_ang, (SPAWN_CANDIDATES,), minval=-1.0, maxval=1.0)
+    ang = u * half
 
-    # goal in the car's frame, then rotated into world coords
-    local = jnp.array([dist * jnp.cos(ang), dist * jnp.sin(ang)])
+    # goals in the car's frame, rotated into world coords
     c, s = jnp.cos(yaw), jnp.sin(yaw)
-    goal = spawn + jnp.array([c * local[0] - s * local[1],
-                              s * local[0] + c * local[1]])
+    lx, ly = dist * jnp.cos(ang), dist * jnp.sin(ang)
+    cands = spawn[None, :] + jnp.stack([c * lx - s * ly, s * lx + c * ly], axis=-1)
+    # Reject goals buried inside a wall -- otherwise a share of episodes
+    # are unreachable no matter how good the policy is, which is exactly
+    # how the goal-geometry ceiling went unnoticed before.
+    goal_clear = jnp.min(wall_distances(cands, walls), axis=-1)
+    # ...and inside the room: an enclosed arena means a goal sampled
+    # past the perimeter is unreachable by construction.
+    inside = (jnp.abs(cands[:, 0]) < bound) & (jnp.abs(cands[:, 1]) < bound)
+    goal = cands[jnp.argmax((goal_clear > GOAL_CLEAR) & inside)]
     return spawn, yaw, goal
 
 
@@ -175,6 +211,25 @@ def reset_data_at(fresh_data, spawn, yaw):
     return fresh_data.replace(qpos=qpos)
 
 
+def _peds_at(t, ped_params, car_xy=None):
+    """(H,3) pedestrian footprints at time t, or None if the room has
+    no people (so the static-room path costs nothing)."""
+    if ped_params is None:
+        return None
+    return pedestrian_circles(t, ped_params, car_xy)
+
+
+def _move_peds(d, t, ped_params, ped_z):
+    """Write the pedestrians' current pose into mocap_pos so the physics
+    agrees with what the lidar sensed. People give way to the car, so
+    their pose depends on where the car currently is."""
+    if ped_params is None:
+        return d
+    car_xy = d.qpos[0:2]
+    return d.replace(
+        mocap_pos=pedestrian_mocap_pos(t, ped_params, ped_z, car_xy))
+
+
 def make_fresh_data(mjx_model):
     return mjx.make_data(mjx_model)
 
@@ -182,11 +237,18 @@ def make_fresh_data(mjx_model):
 # obs = N_LIDAR ranges + [vx_b, vy_b, sin, cos, dir_x, dir_y, dist]
 #       + prev_action(2) + prev_prev_action(2)
 N_LIDAR = 16
-LIDAR_MAX_RANGE = 8.0
+LIDAR_MAX_RANGE = 10.0
+# Two stacked scans: current and previous. A single scan says WHERE
+# obstacles are but not which way they are moving, so with walking
+# people the policy cannot distinguish someone stepping into its path
+# from someone clearing it, and reacts late. Stacking makes range-rate
+# (hence pedestrian motion) inferable from the observation.
 OBS_EXTRA_DIM_SAC = 11
+OBS_DIM_SAC = 2 * N_LIDAR + OBS_EXTRA_DIM_SAC
 
 
-def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
+def build_obs_sac(data, goal, walls, peds, prev_action, prev_prev_action,
+                   prev_scan):
     """SAC observation. Deliberately not train_diffmjx_final.build_obs:
 
     - Goal in BODY frame (unit direction + separate normalized distance)
@@ -230,8 +292,8 @@ def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
 
     # Lidar for the OBSERVATION (directional); true wall distances are
     # still returned for the reward's safety term and collision checks.
-    obstacle_d = wall_distances(jnp.array([x, y]), walls)
-    ranges = lidar_scan(jnp.array([x, y]), theta, walls,
+    obstacle_d = obstacle_distances(jnp.array([x, y]), walls, peds)
+    ranges = lidar_scan(jnp.array([x, y]), theta, walls, peds,
                         n_rays=N_LIDAR, max_range=LIDAR_MAX_RANGE)
     ranges_n = ranges / LIDAR_MAX_RANGE
 
@@ -246,6 +308,7 @@ def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
 
     obs = jnp.concatenate([
         ranges_n,                                                      # N_LIDAR
+        prev_scan,                                                     # N_LIDAR
         jnp.stack([
             jnp.clip(vx_b, -OBS_V_SCALE, OBS_V_SCALE) / OBS_V_SCALE,   # 1
             jnp.clip(vy_b, -OBS_V_SCALE, OBS_V_SCALE) / OBS_V_SCALE,   # 1
@@ -256,11 +319,12 @@ def build_obs_sac(data, goal, walls, prev_action, prev_prev_action):
         prev_action,                                                   # 2
         prev_prev_action,                                              # 2
     ])
-    return obs, x, y, theta, obstacle_d
+    return obs, x, y, theta, obstacle_d, ranges_n
 
 
 def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_dist, max_dist,
-                      gamma, fresh_data, action_repeat, goal_cone):
+                      gamma, fresh_data, action_repeat, goal_cone, arena_size, goal_bound,
+                      ped_params=None, ped_z=0.0, phys_dt=0.002):
     """states: dict of batched arrays (leading dim N_ENVS):
        data (mjx.Data pytree), goal (N,2), prev_action (N,2),
        prev_prev_action (N,2), step_count (N,)
@@ -272,15 +336,23 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
     prev_action = states["prev_action"]
     prev_prev_action = states["prev_prev_action"]
     step_count = states["step_count"]
+    prev_scan = states["prev_scan"]
     n_envs = goal.shape[0]
+    decision_dt = action_repeat * phys_dt
 
     act_key, goal_key = jax.random.split(key)
     act_keys = jax.random.split(act_key, n_envs)
     goal_keys = jax.random.split(goal_key, n_envs)
 
-    def single(data_i, goal_i, prev_action_i, prev_prev_action_i, step_count_i, act_key_i, goal_key_i):
-        obs, x, y, theta, obstacle_d = build_obs_sac(
-            data_i, goal_i, walls, prev_action_i, prev_prev_action_i
+    def single(data_i, goal_i, prev_action_i, prev_prev_action_i, step_count_i,
+                prev_scan_i, act_key_i, goal_key_i):
+        # episode clock drives the pedestrians; they are a pure
+        # function of time, so nothing extra rides in the buffer
+        t0 = step_count_i * decision_dt
+        peds0 = _peds_at(t0, ped_params, data_i.qpos[0:2])
+        obs, x, y, theta, obstacle_d, scan = build_obs_sac(
+            data_i, goal_i, walls, peds0, prev_action_i, prev_prev_action_i,
+            prev_scan_i
         )
         prev_goal_dist = jnp.sqrt((goal_i[0] - x) ** 2 + (goal_i[1] - y) ** 2 + 1e-9)
 
@@ -300,22 +372,29 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         # runs at (~25Hz at repeat=20), makes gamma=0.99 cover the whole
         # episode, and cuts transitions-per-second of sim by the same
         # factor.
-        def repeat_body(d, _):
+        def repeat_body(d, k):
+            # walk the pedestrians every physics step so they move
+            # smoothly through the action-repeat block
+            d = _move_peds(d, t0 + k * phys_dt, ped_params, ped_z)
             d = d.replace(ctrl=ctrl)
             d = mjx.step(mjx_model, d)
             d = d.replace(qvel=jnp.clip(d.qvel, -QVEL_CLAMP, QVEL_CLAMP))
             return d, None
 
-        new_data, _ = jax.lax.scan(repeat_body, data_i, None, length=action_repeat)
+        new_data, _ = jax.lax.scan(repeat_body, data_i,
+                                    jnp.arange(action_repeat, dtype=jnp.float32))
 
-        next_obs, x2, y2, theta2, obstacle_d2 = build_obs_sac(
-            new_data, goal_i, walls, action, prev_action_i
+        t1 = t0 + decision_dt
+        next_obs, x2, y2, theta2, obstacle_d2, scan2 = build_obs_sac(
+            new_data, goal_i, walls, _peds_at(t1, ped_params, new_data.qpos[0:2]), action,
+            prev_action_i, scan
         )
         goal_dist2 = jnp.sqrt((goal_i[0] - x2) ** 2 + (goal_i[1] - y2) ** 2 + 1e-9)
 
         reward, _ = jax_reward(
             jnp.array([x2, y2]), theta2, action, prev_action_i, prev_prev_action_i,
             goal_i, obstacle_d2, prev_goal_dist,
+            arena_size=arena_size,
             weights=SAC_REWARD_WEIGHTS,
         )
 
@@ -334,7 +413,7 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         reward = reward + TIME_COST + jnp.where(success, TERMINAL_BONUS, 0.0)
 
         spawn, yaw, new_goal_sample = sample_spawn_and_goal(
-            goal_key_i, walls, min_dist, max_dist, goal_cone
+            goal_key_i, walls, min_dist, max_dist, goal_cone, goal_bound
         )
         respawned = reset_data_at(fresh_data, spawn, yaw)
 
@@ -345,17 +424,22 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         out_prev_action = jnp.where(reset, jnp.zeros(2), action)
         out_prev_prev_action = jnp.where(reset, jnp.zeros(2), prev_action_i)
         out_step_count = jnp.where(reset, 0, step_count_i + 1)
+        out_scan = jnp.where(reset, jnp.ones_like(scan2), scan2)
 
-        return (out_data, out_goal, out_prev_action, out_prev_prev_action, out_step_count), \
+        return (out_data, out_goal, out_prev_action, out_prev_prev_action,
+                out_step_count, out_scan), \
                (obs, action, reward, next_obs, done_for_bootstrap.astype(jnp.float32))
 
     new_carry, transitions = jax.vmap(single)(
-        data, goal, prev_action, prev_prev_action, step_count, act_keys, goal_keys
+        data, goal, prev_action, prev_prev_action, step_count, prev_scan,
+        act_keys, goal_keys
     )
-    new_data, new_goal, new_prev_action, new_prev_prev_action, new_step_count = new_carry
+    (new_data, new_goal, new_prev_action, new_prev_prev_action,
+     new_step_count, new_scan) = new_carry
     new_states = {
         "data": new_data, "goal": new_goal, "prev_action": new_prev_action,
         "prev_prev_action": new_prev_prev_action, "step_count": new_step_count,
+        "prev_scan": new_scan,
     }
     return new_states, transitions
 
@@ -456,12 +540,13 @@ def sac_update(policy_params, q1_params, q2_params, q1_target, q2_target, log_al
 
 
 def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max_dist,
-                  action_repeat, goal_cone, seed=999):
+                  action_repeat, goal_cone, goal_bound=1e9, ped_params=None,
+                  ped_z=0.0, phys_dt=0.002, seed=999):
     g = jax.random.PRNGKey(seed)
     # Evaluate from randomized start poses too, matching training. A
     # fixed-origin eval would only ever score one pose on one map.
     spawns, yaws, goals = jax.vmap(
-        lambda k: sample_spawn_and_goal(k, walls, min_dist, max_dist, goal_cone)
+        lambda k: sample_spawn_and_goal(k, walls, min_dist, max_dist, goal_cone, goal_bound)
     )(jax.random.split(g, n_eval))
 
     fresh = mjx.make_data(mjx_model)
@@ -469,36 +554,63 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
     def rollout_one(spawn, yaw, goal):
         data = reset_data_at(fresh, spawn, yaw)
 
-        def step(carry, _):
-            data, prev_action, prev_prev_action, min_dist_seen, min_obs_seen = carry
-            obs, x, y, theta, obstacle_d = build_obs_sac(
-                data, goal, walls, prev_action, prev_prev_action
+        decision_dt = action_repeat * phys_dt
+
+        def step(carry, i):
+            (data, prev_action, prev_prev_action, prev_scan,
+             min_dist_seen, min_wall_seen, min_ped_seen) = carry
+            t0 = i * decision_dt
+            obs, x, y, theta, obstacle_d, scan = build_obs_sac(
+                data, goal, walls, _peds_at(t0, ped_params, data.qpos[0:2]), prev_action,
+                prev_prev_action, prev_scan
             )
             action = deterministic_action(policy_params, obs)
             ctrl = jnp.array([STEER_RANGE * action[0], action[1], action[1]])
 
-            def repeat_body(d, _):
+            def repeat_body(d, k):
+                d = _move_peds(d, t0 + k * phys_dt, ped_params, ped_z)
                 d = d.replace(ctrl=ctrl)
                 d = mjx.step(mjx_model, d)
                 d = d.replace(qvel=jnp.clip(d.qvel, -QVEL_CLAMP, QVEL_CLAMP))
                 return d, None
 
-            data, _ = jax.lax.scan(repeat_body, data, None, length=action_repeat)
+            data, _ = jax.lax.scan(repeat_body, data,
+                                    jnp.arange(action_repeat, dtype=jnp.float32))
 
-            _, x2, y2, _, obstacle_d2 = build_obs_sac(data, goal, walls, action, prev_action)
+            _, x2, y2, _, obstacle_d2, scan2 = build_obs_sac(
+                data, goal, walls,
+                _peds_at(t0 + decision_dt, ped_params, data.qpos[0:2]),
+                action, prev_action, scan)
             goal_dist = jnp.sqrt((goal[0] - x2) ** 2 + (goal[1] - y2) ** 2)
             min_dist_seen = jnp.minimum(min_dist_seen, goal_dist)
-            min_obs_seen = jnp.minimum(min_obs_seen, jnp.min(obstacle_d2))
-            return (data, action, prev_action, min_dist_seen, min_obs_seen), None
+            # Walls and people are scored apart. A wall collision is
+            # unambiguously the car's doing; a person who walks into the
+            # car is not the same event, and lumping them together made
+            # the metric read 20/20 for a hand-written controller and a
+            # trained policy alike -- i.e. measure nothing.
+            car_xy2 = jnp.array([x2, y2])
+            min_wall_seen = jnp.minimum(
+                min_wall_seen, jnp.min(wall_distances(car_xy2, walls)))
+            peds2 = _peds_at(t0 + decision_dt, ped_params, car_xy2)
+            if peds2 is None:
+                ped_clear = jnp.array(jnp.inf)
+            else:
+                ped_clear = jnp.min(
+                    jnp.linalg.norm(car_xy2[None, :] - peds2[:, :2], axis=-1)
+                    - peds2[:, 2])
+            min_ped_seen = jnp.minimum(min_ped_seen, ped_clear)
+            return (data, action, prev_action, scan2,
+                    min_dist_seen, min_wall_seen, min_ped_seen), None
 
         init_dist = jnp.sqrt((goal[0] - spawn[0]) ** 2 + (goal[1] - spawn[1]) ** 2)
-        carry0 = (data, jnp.zeros(2), jnp.zeros(2), init_dist, jnp.array(jnp.inf))
-        (data, _, _, min_dist_seen, min_obs_dist), _ = jax.lax.scan(
-            step, carry0, None, length=horizon
+        carry0 = (data, jnp.zeros(2), jnp.zeros(2), jnp.ones(N_LIDAR),
+                  init_dist, jnp.array(jnp.inf), jnp.array(jnp.inf))
+        (data, _, _, _, min_dist_seen, min_wall, min_ped), _ = jax.lax.scan(
+            step, carry0, jnp.arange(horizon, dtype=jnp.float32)
         )
-        return min_dist_seen, min_obs_dist
+        return min_dist_seen, min_wall, min_ped
 
-    min_dists, min_obs_dists = jax.vmap(rollout_one)(spawns, yaws, goals)
+    min_dists, min_walls, min_peds = jax.vmap(rollout_one)(spawns, yaws, goals)
     # match training's actual success semantics: did the car ever get
     # within SUCCESS_DIST, not just where it happened to be at the very
     # last timestep (the old final-position-only check was undercounting
@@ -507,8 +619,61 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
     # rewards *staying* at the goal once reached).
     success = jnp.mean(min_dists < SUCCESS_DIST)
     mean_dist = jnp.mean(min_dists)
-    collisions = jnp.sum(min_obs_dists < CAR_RADIUS)
-    return mean_dist, collisions, success
+    wall_hits = jnp.sum(min_walls < CAR_RADIUS)
+    ped_hits = jnp.sum(min_peds < CAR_RADIUS)
+    return mean_dist, wall_hits, ped_hits, success
+
+
+def make_env(seed, room=True, room_size=8.0, n_inner=6, n_humans=6,
+              n_walls=4, map_size=6.0, spawn_half=6.5, max_dist=10.0):
+    """Build the environment. Single source of truth, used by training,
+    eval and tracing alike.
+
+    Previously each script built its own scene, and they drifted: an
+    evaluator was still constructing the old open-field map while the
+    checkpoint had been trained in a room, which silently scores a
+    policy on a world it never saw. Anything that loads a policy should
+    call this with the same arguments the run used.
+    """
+    global SPAWN_HALF, OBS_GOAL_DIST_SCALE
+    SPAWN_HALF = spawn_half
+    OBS_GOAL_DIST_SCALE = max_dist * 1.6
+    arena_size = spawn_half + max_dist + 4.0
+    ped_params, ped_z, humans_list = None, 0.0, []
+
+    if room:
+        walls_list, humans_list = generate_room_layout(
+            room_half=room_size, n_inner=n_inner, n_humans=n_humans, seed=seed)
+        SPAWN_HALF = min(spawn_half, room_size - 1.5)
+        goal_bound = room_size - 1.0
+        arena_size = room_size + 2.0
+        if humans_list:
+            import random as _random
+            ped_params = make_patrol_params(humans_list, _random.Random(seed),
+                                             room_half=room_size)
+            ped_z = HUMAN_HEIGHT * 0.39 + HUMAN_RADIUS
+        scene_path = build_room_scene_xml(walls_list, humans_list,
+                                           out_path=f"sac_room_{seed}.xml",
+                                           room_half=room_size)
+    else:
+        walls_list = generate_map_set(n_maps=1, n_walls=n_walls,
+                                       size=map_size, base_seed=seed)[0]
+        goal_bound = 1e9
+        scene_path = build_car_scene_xml(walls_list, out_path=f"sac_map_{seed}.xml",
+                                          arena_size=arena_size + 4.0)
+
+    model = mujoco.MjModel.from_xml_path(scene_path)
+    return dict(
+        mjx_model=mjx.put_model(model),
+        walls=jnp.array(walls_list),
+        walls_list=walls_list,
+        humans_list=humans_list,
+        ped_params=ped_params,
+        ped_z=ped_z,
+        goal_bound=goal_bound,
+        arena_size=arena_size,
+        spawn_half=SPAWN_HALF,
+    )
 
 
 def main():
@@ -550,21 +715,45 @@ def main():
                               "which puts many goals inside the car's minimum turning "
                               "circle (see sample_goals_cone).")
     parser.add_argument("--n-walls", type=int, default=4)
+    parser.add_argument("--map-size", type=float, default=6.0,
+                         help="half-extent (m) the wall field is scattered over "
+                              "(legacy open-field maps; ignored when --room is set)")
+    parser.add_argument("--room", action="store_true",
+                         help="use an enclosed room (perimeter walls + interior "
+                              "obstacles) instead of free-floating sticks on an "
+                              "unbounded floor")
+    parser.add_argument("--room-size", type=float, default=8.0,
+                         help="room half-extent (m); 8.0 = a 16x16m room")
+    parser.add_argument("--n-inner", type=int, default=6,
+                         help="interior walls inside the room")
+    parser.add_argument("--n-humans", type=int, default=6,
+                         help="walking people inside the room (0 = none)")
+    parser.add_argument("--spawn-half", type=float, default=3.0,
+                         help="half-extent (m) of the box the car spawns in")
     parser.add_argument("--eval-every", type=int, default=2000)
     parser.add_argument("--eval-n", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    walls_list = generate_map_set(n_maps=1, n_walls=args.n_walls, base_seed=args.seed)[0]
-    walls = jnp.array(walls_list)
-    scene_path = build_car_scene_xml(walls_list, out_path="sac_map_0.xml")
-    model = mujoco.MjModel.from_xml_path(scene_path)
-    mjx_model = mjx.put_model(model)
-    print(f"Built SAC training map (n_walls={args.n_walls}).")
+    env = make_env(args.seed, room=args.room, room_size=args.room_size,
+                    n_inner=args.n_inner, n_humans=args.n_humans,
+                    n_walls=args.n_walls, map_size=args.map_size,
+                    spawn_half=args.spawn_half, max_dist=args.max_dist)
+    mjx_model = env["mjx_model"]
+    walls = env["walls"]
+    walls_list, humans_list = env["walls_list"], env["humans_list"]
+    ped_params, ped_z = env["ped_params"], env["ped_z"]
+    goal_bound, arena_size = env["goal_bound"], env["arena_size"]
+    print(f"Built SAC map: {len(walls_list)} walls, {len(humans_list)} people "
+          f"({'room ' + str(2*args.room_size) + 'm sq' if args.room else 'open field'}), "
+          f"spawn +-{env['spawn_half']:.1f}m, "
+          f"goals {args.min_dist}-{args.max_dist}m, "
+          f"cone +-{args.goal_cone:.2f}rad at 1m widening to all directions "
+          f"by {CONE_FULL_DIST}m")
 
     key = jax.random.PRNGKey(args.seed)
     pkey, q1key, q2key = jax.random.split(key, 3)
-    obs_dim = N_LIDAR + OBS_EXTRA_DIM_SAC
+    obs_dim = OBS_DIM_SAC
     policy_params = init_sac_policy_params(pkey, obs_dim)
     q1_params = init_q_params(q1key, obs_dim)
     q2_params = init_q_params(q2key, obs_dim)
@@ -583,7 +772,8 @@ def main():
     env_step_jit = jax.jit(
         lambda policy_params, states, key, min_dist, max_dist: env_step_batched(
             policy_params, mjx_model, walls, states, key, args.horizon, min_dist, max_dist,
-            args.gamma, fresh_data, args.action_repeat, args.goal_cone
+            args.gamma, fresh_data, args.action_repeat, args.goal_cone, arena_size,
+            goal_bound, ped_params, ped_z
         )
     )
     sac_update_jit = jax.jit(
@@ -593,14 +783,14 @@ def main():
     eval_jit = jax.jit(
         lambda pp, min_dist, max_dist: evaluate_sac(
             pp, mjx_model, walls, args.horizon, args.eval_n, min_dist, max_dist,
-            args.action_repeat, args.goal_cone
+            args.action_repeat, args.goal_cone, goal_bound, ped_params, ped_z
         )
     )
 
     n_envs = args.n_envs
     _init_spawns, _init_yaws, _init_goals = jax.vmap(
         lambda k: sample_spawn_and_goal(k, walls, args.min_dist,
-                                        args.min_dist + 0.3, args.goal_cone)
+                                        args.min_dist + 0.3, args.goal_cone, goal_bound)
     )(jax.random.split(jax.random.PRNGKey(args.seed + 1), n_envs))
     states = {
         "data": jax.vmap(lambda sp, yw: reset_data_at(fresh_data, sp, yw))(
@@ -609,6 +799,9 @@ def main():
         "prev_action": jnp.zeros((n_envs, 2)),
         "prev_prev_action": jnp.zeros((n_envs, 2)),
         "step_count": jnp.zeros((n_envs,), dtype=jnp.int32),
+        # 1.0 = "nothing within lidar range", the right prior for the
+        # first step of an episode when there is no previous scan yet
+        "prev_scan": jnp.ones((n_envs, N_LIDAR)),
     }
 
     buffer = ReplayBuffer(args.buffer_size, obs_dim)
@@ -642,13 +835,15 @@ def main():
                 )
 
         if total_env_steps % args.eval_every < n_envs:
-            eval_dist, eval_collisions, eval_success = eval_jit(policy_params, args.min_dist, args.max_dist)
+            eval_dist, eval_wall, eval_ped, eval_success = eval_jit(
+                policy_params, args.min_dist, args.max_dist)
             eval_success_f = float(eval_success)
             alpha_display = float(jnp.exp(log_alpha))
             print(f"steps {total_env_steps:7d}  progress={progress:.2f}  goal_range=[{min_dist:.1f},{max_dist:.1f}]  "
                   f"alpha={alpha_display:.3f}  buffer={buffer.size}  "
                   f"EVAL_dist={float(eval_dist):.3f}  EVAL_success={eval_success_f*100:.0f}%  "
-                  f"EVAL_collisions={int(eval_collisions)}/{args.eval_n}")
+                  f"wall_hits={int(eval_wall)}/{args.eval_n}  "
+                  f"ped_hits={int(eval_ped)}/{args.eval_n}")
             if eval_success_f > best_success:
                 best_success = eval_success_f
                 np.savez("sac_policy_best.npz",
@@ -657,8 +852,11 @@ def main():
                 print(f"         -> new best checkpoint (success={best_success*100:.0f}%) saved")
 
     print(f"\nDone. Best checkpoint: success={best_success*100:.0f}%")
-    eval_dist, eval_collisions, eval_success = eval_jit(policy_params, args.min_dist, args.max_dist)
-    print(f"LARGE-SAMPLE final eval: success={float(eval_success)*100:.1f}%  mean_dist={float(eval_dist):.3f}")
+    eval_dist, eval_wall, eval_ped, eval_success = eval_jit(
+        policy_params, args.min_dist, args.max_dist)
+    print(f"LARGE-SAMPLE final eval: success={float(eval_success)*100:.1f}%  "
+          f"mean_dist={float(eval_dist):.3f}  wall_hits={int(eval_wall)}  "
+          f"ped_hits={int(eval_ped)}")
     np.savez("sac_policy_final.npz",
              **{f"p{i}_W": np.array(w) for i, (w, b) in enumerate(policy_params)},
              **{f"p{i}_b": np.array(b) for i, (w, b) in enumerate(policy_params)})

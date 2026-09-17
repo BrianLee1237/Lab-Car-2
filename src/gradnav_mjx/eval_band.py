@@ -14,9 +14,7 @@ import mujoco.mjx as mjx
 import mjx_solver_patch
 mjx_solver_patch.apply()
 
-from mjx_car_scene import build_car_scene_xml
-from mjx_random_maps import generate_map_set
-from train_sac import evaluate_sac
+from train_sac import evaluate_sac, make_env
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", default="sac_policy_final.npz")
@@ -30,12 +28,21 @@ parser.add_argument("--map-seed", type=int, default=0,
                      help="MUST match the --seed the checkpoint trained with "
                           "to score on its training map; use another value for "
                           "a held-out map.")
+parser.add_argument("--room", action="store_true")
+parser.add_argument("--room-size", type=float, default=8.0)
+parser.add_argument("--n-inner", type=int, default=6)
+parser.add_argument("--n-humans", type=int, default=6)
+parser.add_argument("--spawn-half", type=float, default=6.5)
+parser.add_argument("--max-dist", type=float, default=10.0)
 args = parser.parse_args()
 
-walls_list = generate_map_set(n_maps=1, n_walls=args.n_walls, base_seed=args.map_seed)[0]
-walls = jnp.array(walls_list)
-model = mujoco.MjModel.from_xml_path(build_car_scene_xml(walls_list, out_path="band_map.xml"))
-mjx_model = mjx.put_model(model)
+# built by the same function training uses, so an evaluation can never
+# silently score a policy on a different world than it was trained in
+env = make_env(args.map_seed, room=args.room, room_size=args.room_size,
+                n_inner=args.n_inner, n_humans=args.n_humans,
+                n_walls=args.n_walls, spawn_half=args.spawn_half,
+                max_dist=args.max_dist)
+mjx_model, walls = env["mjx_model"], env["walls"]
 
 ckpt = np.load(args.checkpoint)
 n_layers = len([k for k in ckpt.files if k.endswith("_W")])
@@ -43,15 +50,20 @@ policy_params = [(jnp.array(ckpt[f"p{i}_W"]), jnp.array(ckpt[f"p{i}_b"])) for i 
 
 eval_jit = jax.jit(
     lambda pp, lo, hi: evaluate_sac(pp, mjx_model, walls, args.horizon, args.eval_n,
-                                     lo, hi, args.action_repeat, args.goal_cone)
+                                     lo, hi, args.action_repeat, args.goal_cone,
+                                     env["goal_bound"], env["ped_params"],
+                                     env["ped_z"])
 )
 
-print(f"checkpoint={args.checkpoint}  map_seed={args.map_seed}  n={args.eval_n} goals/band  "
+print(f"checkpoint={args.checkpoint}  map_seed={args.map_seed}  "
+      f"{len(env['walls_list'])} walls / {len(env['humans_list'])} people  "
+      f"n={args.eval_n} goals/band  "
       f"horizon={args.horizon}x{args.action_repeat} steps "
       f"({args.horizon*args.action_repeat*0.002:.0f}s)\n")
-print(f"{'band (m)':>12}  {'success':>8}  {'mean closest':>13}  {'collisions':>11}")
+print(f"{'band (m)':>12}  {'success':>8}  {'mean closest':>13}  "
+      f"{'wall hits':>10}  {'ped hits':>9}")
 for band in args.bands.split(";"):
     lo, hi = (float(v) for v in band.split(","))
-    d, c, s = eval_jit(policy_params, lo, hi)
+    d, wh, ph, s = eval_jit(policy_params, lo, hi)
     print(f"{lo:5.1f}-{hi:<5.1f}  {float(s)*100:7.1f}%  {float(d):12.3f}  "
-          f"{int(c):5d}/{args.eval_n}")
+          f"{int(wh):4d}/{args.eval_n}  {int(ph):4d}/{args.eval_n}")

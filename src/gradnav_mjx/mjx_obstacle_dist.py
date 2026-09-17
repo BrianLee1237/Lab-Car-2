@@ -23,3 +23,24 @@ def wall_distances(car_xy, walls):
         closest = a[None, :, :] + t[..., None] * ab[None, :, :]
         dist_to_line = jnp.linalg.norm(car_xy[:, None, :] - closest, axis=-1)
         return dist_to_line - r[None, :]
+
+
+def human_distances(car_xy, humans):
+    """Distance from the car to each human's circular footprint."""
+    c = humans[:, 0:2]
+    r = humans[:, 2]
+    if car_xy.ndim == 1:
+        return jnp.linalg.norm(car_xy[None, :] - c, axis=-1) - r
+    return jnp.linalg.norm(car_xy[:, None, :] - c[None, :, :], axis=-1) - r[None, :]
+
+
+def obstacle_distances(car_xy, walls, humans=None):
+    """Distances to every obstacle: walls and, if given, humans.
+
+    Used for the reward's safety term and for collision counting, so
+    that people count as things you must not hit, exactly like walls.
+    """
+    d = wall_distances(car_xy, walls)
+    if humans is None or humans.shape[0] == 0:
+        return d
+    return jnp.concatenate([d, human_distances(car_xy, humans)], axis=-1)

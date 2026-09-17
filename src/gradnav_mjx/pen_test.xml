@@ -1,5 +1,5 @@
 
-<mujoco model="ackermann_car_scene">
+<mujoco model="ackermann_car_room">
   <compiler angle="radian"/>
   <option timestep="0.002" gravity="0 0 -9.81" iterations="4" cone="pyramidal"/>
 
@@ -9,11 +9,13 @@
   </default>
 
   <worldbody>
-    <geom name="floor" type="plane" size="8.0 8.0 0.1" rgba="0.3 0.3 0.3 1"/>
-    <geom name="wall_0" type="capsule" size="0.1" fromto="4.18725996355 2.822344495673477 0.2 4.18725996355 4.809230734508819 0.2" rgba="0.5 0.5 0.5 1"/>
-    <geom name="wall_1" type="capsule" size="0.1" fromto="-4.148631578020863 -2.504733754263834 0.2 -0.9899549666957124 -2.504733754263834 0.2" rgba="0.5 0.5 0.5 1"/>
-    <geom name="wall_2" type="capsule" size="0.1" fromto="-4.204137517269167 4.239953562183963 0.2 -0.9730806522808733 4.239953562183963 0.2" rgba="0.5 0.5 0.5 1"/>
-    <geom name="wall_3" type="capsule" size="0.1" fromto="-4.691836157399621 2.4290274294909233 0.2 -2.7086195855718938 2.4290274294909233 0.2" rgba="0.5 0.5 0.5 1"/>
+    <light name="ceiling" pos="0 0 6" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" size="10.0 10.0 0.1" rgba="0.32 0.33 0.35 1"/>
+    <geom name="wall_0" type="box" size="8.0000 0.0750 0.5000" pos="0.0000 -8.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_1" type="box" size="8.0000 0.0750 0.5000" pos="0.0000 8.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_2" type="box" size="0.0750 8.0000 0.5000" pos="-8.0000 0.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_3" type="box" size="0.0750 8.0000 0.5000" pos="8.0000 0.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_4" type="box" size="0.0750 3.0000 0.5000" pos="3.0000 0.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
 
     <body name="chassis" pos="0 0 0.1">
       <freejoint name="chassis_free"/>
