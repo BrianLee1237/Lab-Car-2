@@ -25,6 +25,8 @@ See SAC_REWARD_WEIGHTS and build_obs_sac for what differs and why.
 """
 
 import argparse
+import os
+import pickle
 
 import numpy as np
 import jax
@@ -624,6 +626,28 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
     return mean_dist, wall_hits, ped_hits, success
 
 
+def save_train_state(path, state):
+    """Full training state, so a killed run can be resumed rather than
+    restarted. This sandbox has repeatedly killed long runs partway
+    through; without this, every restart threw away all progress.
+
+    The replay buffer is deliberately not saved (it is ~100MB and
+    refills quickly); the networks, their target copies, the optimiser
+    moments and the entropy temperature are what actually carry the
+    learning.
+    """
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(jax.device_get(state), f)
+    os.replace(tmp, path)     # atomic: a kill mid-write cannot corrupt it
+
+
+def load_train_state(path):
+    with open(path, "rb") as f:
+        state = pickle.load(f)
+    return jax.tree_util.tree_map(jnp.asarray, state)
+
+
 def make_env(seed, room=True, room_size=8.0, n_inner=6, n_humans=6,
               n_walls=4, map_size=6.0, spawn_half=6.5, max_dist=10.0):
     """Build the environment. Single source of truth, used by training,
@@ -724,15 +748,19 @@ def main():
                               "unbounded floor")
     parser.add_argument("--room-size", type=float, default=8.0,
                          help="room half-extent (m); 8.0 = a 16x16m room")
-    parser.add_argument("--n-inner", type=int, default=6,
+    parser.add_argument("--n-inner", type=int, default=4,
                          help="interior walls inside the room")
-    parser.add_argument("--n-humans", type=int, default=6,
+    parser.add_argument("--n-humans", type=int, default=3,
                          help="walking people inside the room (0 = none)")
     parser.add_argument("--spawn-half", type=float, default=3.0,
                          help="half-extent (m) of the box the car spawns in")
     parser.add_argument("--eval-every", type=int, default=2000)
     parser.add_argument("--eval-n", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--ckpt", default="sac_train_state.pkl",
+                         help="rolling full-state checkpoint for --resume")
+    parser.add_argument("--resume", action="store_true",
+                         help="continue from --ckpt if it exists")
     args = parser.parse_args()
 
     env = make_env(args.seed, room=args.room, room_size=args.room_size,
@@ -766,6 +794,17 @@ def main():
     q1_opt = adam_init(q1_params)
     q2_opt = adam_init(q2_params)
     alpha_opt = adam_init(log_alpha)
+
+    start_steps = 0
+    if args.resume and os.path.exists(args.ckpt):
+        st = load_train_state(args.ckpt)
+        (policy_params, q1_params, q2_params, q1_target, q2_target, log_alpha,
+         policy_opt, q1_opt, q2_opt, alpha_opt) = (
+            st["policy"], st["q1"], st["q2"], st["q1t"], st["q2t"], st["log_alpha"],
+            st["policy_opt"], st["q1_opt"], st["q2_opt"], st["alpha_opt"])
+        start_steps = int(st["steps"])
+        print(f"resumed from {args.ckpt} at {start_steps} steps "
+              f"(alpha={float(jnp.exp(log_alpha)):.3f})")
 
     fresh_data = make_fresh_data(mjx_model)
 
@@ -808,7 +847,7 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     best_success = -1.0
-    total_env_steps = 0
+    total_env_steps = start_steps
     it = 0
     while total_env_steps < args.total_steps:
         progress = min(1.0, total_env_steps / (args.total_steps * 0.7))
@@ -850,6 +889,11 @@ def main():
                          **{f"p{i}_W": np.array(w) for i, (w, b) in enumerate(policy_params)},
                          **{f"p{i}_b": np.array(b) for i, (w, b) in enumerate(policy_params)})
                 print(f"         -> new best checkpoint (success={best_success*100:.0f}%) saved")
+            save_train_state(args.ckpt, dict(
+                policy=policy_params, q1=q1_params, q2=q2_params,
+                q1t=q1_target, q2t=q2_target, log_alpha=log_alpha,
+                policy_opt=policy_opt, q1_opt=q1_opt, q2_opt=q2_opt,
+                alpha_opt=alpha_opt, steps=total_env_steps))
 
     print(f"\nDone. Best checkpoint: success={best_success*100:.0f}%")
     eval_dist, eval_wall, eval_ped, eval_success = eval_jit(
