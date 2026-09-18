@@ -86,9 +86,13 @@ SAC_REWARD_WEIGHTS = dict(
     yaw_alignment=0.02,  # was 2.0  -- keep as faint shaping, not a standing wage
     progress=10.0,       # was 150.0 (DiffRL) -- +10.0 total per metre closed
     precision=0.0,       # was 1.0  -- another standing reward for loitering
-    obstacle=0.5,
+    obstacle=2.5,
     out_of_map=-1.0,
 )
+# obstacle 0.5 -> 2.5: with wall and pedestrian hits finally reported
+# apart, the first room runs read wall_hits=10, ped_hits=0 -- the car
+# avoids people but drives into walls, and the safety term was too weak
+# to matter next to progress=10.0 per metre.
 TERMINAL_BONUS = 20.0
 TIME_COST = -0.02        # per decision
 # Magnitudes matter relative to SAC's entropy bonus alpha*H, not just
@@ -135,6 +139,8 @@ SPAWN_CLEAR = 0.8       # required clearance from any wall at spawn (m)
 GOAL_CLEAR = 0.6        # required clearance from any wall at the goal (m)
 SPAWN_CANDIDATES = 8
 CONE_FULL_DIST = 3.0    # beyond this, goals may sit in ANY direction
+CURRICULUM_START_MIN = 1.0   # goal range at the start of training
+CURRICULUM_START_MAX = 2.5
 
 
 def cone_for_distance(dist, cone_min):
@@ -851,8 +857,15 @@ def main():
     it = 0
     while total_env_steps < args.total_steps:
         progress = min(1.0, total_env_steps / (args.total_steps * 0.7))
-        max_dist = args.min_dist + progress * (args.max_dist - args.min_dist)
-        min_dist = args.min_dist
+        # Ramp BOTH ends of the goal range, not just the far end. With a
+        # fixed --min-dist of 5m every episode was maximally hard from
+        # step one, so the policy never got the easy early wins that let
+        # it discover "drive at the goal" before having to also solve
+        # routing around walls. The runs that actually converged (90% at
+        # 1-6m) all started near 1m and grew. Evaluation is unaffected --
+        # it always scores the full --min-dist..--max-dist target range.
+        min_dist = CURRICULUM_START_MIN + progress * (args.min_dist - CURRICULUM_START_MIN)
+        max_dist = CURRICULUM_START_MAX + progress * (args.max_dist - CURRICULUM_START_MAX)
 
         key, step_key = jax.random.split(key)
         states, transitions = env_step_jit(policy_params, states, step_key, min_dist, max_dist)
