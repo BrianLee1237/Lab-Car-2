@@ -795,6 +795,9 @@ def main():
                          help="room half-extent (m); 8.0 = a 16x16m room")
     parser.add_argument("--n-inner", type=int, default=4,
                          help="interior walls inside the room")
+    parser.add_argument("--obstacle-weight", type=float, default=1.0,
+                         help="weight of the reward safety term; the room's "
+                              "remaining failures are wall collisions")
     parser.add_argument("--n-humans", type=int, default=3,
                          help="walking people inside the room (0 = none)")
     parser.add_argument("--spawn-half", type=float, default=3.0,
@@ -808,6 +811,7 @@ def main():
                          help="continue from --ckpt if it exists")
     args = parser.parse_args()
 
+    SAC_REWARD_WEIGHTS["obstacle"] = args.obstacle_weight
     env = make_env(args.seed, room=args.room, room_size=args.room_size,
                     n_inner=args.n_inner, n_humans=args.n_humans,
                     n_walls=args.n_walls, map_size=args.map_size,
