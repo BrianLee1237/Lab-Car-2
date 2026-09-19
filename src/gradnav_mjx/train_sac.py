@@ -104,6 +104,16 @@ SAC_REWARD_WEIGHTS = dict(
 # approach itself unprofitable.
 TERMINAL_BONUS = 20.0
 TIME_COST = -0.02        # per decision
+COLLISION_PENALTY = 15.0 # and the episode ends
+# Hitting a wall now TERMINATES the episode. Without that the car just
+# stayed pinned against the wall it hit -- a trace showed it stuck at
+# one position for the last 100 of 300 decisions at full throttle and
+# v=0.00 -- so two thirds of the episode produced useless transitions
+# and no signal about recovering. The policy's rational answer was to
+# creep (v=0.01-0.35, throttle near zero or negative) so it could never
+# get stuck, which is exactly the near-motionless behaviour observed.
+# Terminating on contact makes collisions sharply aversive AND frees
+# the episode, and is standard for navigation RL.
 # Magnitudes matter relative to SAC's entropy bonus alpha*H, not just
 # in absolute terms. An earlier pass set progress=2.0/terminal=5.0 AND
 # slowed alpha's decay 16x; together the entropy term swamped the tiny
@@ -416,18 +426,21 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         )
 
         success = goal_dist2 < SUCCESS_DIST
+        crashed = jnp.min(wall_distances(jnp.array([x2, y2]), walls)) < CAR_RADIUS
         timeout = (step_count_i + 1) >= horizon
-        reset = success | timeout
+        reset = success | timeout | crashed
         # bootstrap mask: only true success zeroes future value; timeout is
         # an artificial cutoff, not a real terminal state, so we still
         # bootstrap through it (standard truncation-vs-termination handling).
-        done_for_bootstrap = success
+        done_for_bootstrap = success | crashed
 
         # Terminal bonus + per-decision time cost. Without the bonus,
         # zeroing the bootstrap on success makes reaching the goal a pure
         # loss of future value, so the optimal policy is to approach and
         # then never touch it. See SAC_REWARD_WEIGHTS.
-        reward = reward + TIME_COST + jnp.where(success, TERMINAL_BONUS, 0.0)
+        reward = (reward + TIME_COST
+                   + jnp.where(success, TERMINAL_BONUS, 0.0)
+                   - jnp.where(crashed, COLLISION_PENALTY, 0.0))
 
         spawn, yaw, new_goal_sample = sample_spawn_and_goal(
             goal_key_i, walls, min_dist, max_dist, goal_cone, goal_bound
