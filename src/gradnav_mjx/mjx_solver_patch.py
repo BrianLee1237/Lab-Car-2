@@ -74,8 +74,30 @@ def _patched_solve(m, d):
     return d
 
 
+_ORIGINAL_SOLVE = _solver_mod.solve
+
+
 def apply():
-    """Call once, before building any mjx models, to install the patch."""
+    """Install the patch. ONLY for DiffRL, which needs to differentiate
+    through the contact solve.
+
+    Do not apply this for a model-free learner. The scan-based solve
+    trades solver behaviour for differentiability, and in contact-rich
+    scenes it goes unstable: in an enclosed 16x16m room the car reached
+    19.2 m/s (its calibrated top speed is ~3.5-3.9) and was launched
+    clean through the perimeter to y=+94, versus 3.25 m/s and no escape
+    on the stock solver. That corrupted every room result -- constant
+    wall contacts meant constant instability -- while the earlier
+    open-field maps hid it, since a car that rarely touches anything
+    rarely invokes the contact solver at all.
+    """
     _solver_mod.solve = _patched_solve
     import mujoco.mjx as mjx
     mjx.solve = _patched_solve
+
+
+def restore():
+    """Put the stock MJX solver back."""
+    _solver_mod.solve = _ORIGINAL_SOLVE
+    import mujoco.mjx as mjx
+    mjx.solve = _ORIGINAL_SOLVE

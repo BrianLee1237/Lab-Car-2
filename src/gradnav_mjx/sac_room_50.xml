@@ -20,13 +20,13 @@
     <geom name="wall_6" type="box" size="0.0750 1.1705 0.5000" pos="-4.5069 4.2286 0.5000" rgba="0.55 0.55 0.60 1"/>
     <geom name="wall_7" type="box" size="2.2076 0.0750 0.5000" pos="1.3974 1.7549 0.5000" rgba="0.55 0.55 0.60 1"/>
     <body name="human_0" mocap="true" pos="5.4001 6.0119 0.9130">
-      <geom name="human_geom_0" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1"/>
+      <geom name="human_geom_0" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1" contype="0" conaffinity="0"/>
     </body>
     <body name="human_1" mocap="true" pos="2.5109 4.2237 0.9130">
-      <geom name="human_geom_1" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1"/>
+      <geom name="human_geom_1" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1" contype="0" conaffinity="0"/>
     </body>
     <body name="human_2" mocap="true" pos="-0.9062 -3.5461 0.9130">
-      <geom name="human_geom_2" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1"/>
+      <geom name="human_geom_2" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1" contype="0" conaffinity="0"/>
     </body>
 
     <body name="chassis" pos="0 0 0.1">

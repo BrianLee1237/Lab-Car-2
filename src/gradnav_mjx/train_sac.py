@@ -35,7 +35,6 @@ import mujoco
 import mujoco.mjx as mjx
 
 import mjx_solver_patch
-mjx_solver_patch.apply()
 
 from mjx_car_scene import build_car_scene_xml, STEER_RANGE
 from mjx_random_maps import (generate_map_set, generate_room_set,
@@ -56,6 +55,13 @@ from train_diffmjx_final import (
     sample_goals, curriculum_goal_range, adam_init, adam_update,
     clip_tree, sanitize_grads,
 )
+
+# train_diffmjx_final installs the differentiable contact-solver patch at
+# import time. SAC never differentiates through physics, and that patch is
+# unstable in contact-rich scenes -- in the room it launched the car to
+# 19.2 m/s and through the perimeter wall, versus 3.25 m/s on the stock
+# solver. Undo it here, after the import that caused it.
+mjx_solver_patch.restore()
 
 SUCCESS_DIST = 0.5
 
@@ -86,13 +92,16 @@ SAC_REWARD_WEIGHTS = dict(
     yaw_alignment=0.02,  # was 2.0  -- keep as faint shaping, not a standing wage
     progress=10.0,       # was 150.0 (DiffRL) -- +10.0 total per metre closed
     precision=0.0,       # was 1.0  -- another standing reward for loitering
-    obstacle=2.5,
+    obstacle=1.0,
     out_of_map=-1.0,
 )
-# obstacle 0.5 -> 2.5: with wall and pedestrian hits finally reported
-# apart, the first room runs read wall_hits=10, ped_hits=0 -- the car
-# avoids people but drives into walls, and the safety term was too weak
-# to matter next to progress=10.0 per metre.
+# obstacle: 0.5 was too weak (wall_hits=10, ped_hits=0 -- walls ignored),
+# but 2.5 over-corrected. In an enclosed room the car is often within
+# the 0.6m softplus band of SOMETHING, so at 2.5 the safest policy was
+# to hang back in open space and never approach goals, many of which sit
+# near walls: mean closest-approach stalled at 5.1-6.0m from a ~7.5m
+# start while success sat at 0-7%. 1.0 keeps walls costly without making
+# approach itself unprofitable.
 TERMINAL_BONUS = 20.0
 TIME_COST = -0.02        # per decision
 # Magnitudes matter relative to SAC's entropy bonus alpha*H, not just
@@ -453,6 +462,21 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
 
 
 class ReplayBuffer:
+    def snapshot(self):
+        n = self.size
+        return dict(obs=self.obs[:n], action=self.action[:n],
+                     reward=self.reward[:n], next_obs=self.next_obs[:n],
+                     done=self.done[:n], ptr=self.ptr, size=self.size)
+
+    def restore(self, snap):
+        n = int(snap["size"])
+        self.obs[:n] = snap["obs"]; self.action[:n] = snap["action"]
+        self.reward[:n] = snap["reward"]; self.next_obs[:n] = snap["next_obs"]
+        self.done[:n] = snap["done"]
+        self.ptr = int(snap["ptr"]) % self.capacity
+        self.size = min(n, self.capacity)
+
+
     def __init__(self, capacity, obs_dim):
         self.capacity = capacity
         self.obs = np.zeros((capacity, obs_dim), dtype=np.float32)
@@ -637,10 +661,12 @@ def save_train_state(path, state):
     restarted. This sandbox has repeatedly killed long runs partway
     through; without this, every restart threw away all progress.
 
-    The replay buffer is deliberately not saved (it is ~100MB and
-    refills quickly); the networks, their target copies, the optimiser
-    moments and the entropy temperature are what actually carry the
-    learning.
+    The replay buffer IS saved. Leaving it out looked like a cheap
+    saving (~40MB) but it is most of what an off-policy learner knows:
+    chaining three 10k-step legs with a fresh buffer each time gave
+    buffer=5008 then 10000 at the evals and flat 0-7% success across
+    30k steps, far worse than one continuous run. Only the filled
+    portion is stored.
     """
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
@@ -802,6 +828,7 @@ def main():
     alpha_opt = adam_init(log_alpha)
 
     start_steps = 0
+    resume_buffer = None
     if args.resume and os.path.exists(args.ckpt):
         st = load_train_state(args.ckpt)
         (policy_params, q1_params, q2_params, q1_target, q2_target, log_alpha,
@@ -809,6 +836,7 @@ def main():
             st["policy"], st["q1"], st["q2"], st["q1t"], st["q2t"], st["log_alpha"],
             st["policy_opt"], st["q1_opt"], st["q2_opt"], st["alpha_opt"])
         start_steps = int(st["steps"])
+        resume_buffer = st.get("buffer")
         print(f"resumed from {args.ckpt} at {start_steps} steps "
               f"(alpha={float(jnp.exp(log_alpha)):.3f})")
 
@@ -850,6 +878,9 @@ def main():
     }
 
     buffer = ReplayBuffer(args.buffer_size, obs_dim)
+    if resume_buffer is not None:
+        buffer.restore(jax.device_get(resume_buffer))
+        print(f"  restored replay buffer: {buffer.size} transitions")
     rng = np.random.default_rng(args.seed)
 
     best_success = -1.0
@@ -906,7 +937,8 @@ def main():
                 policy=policy_params, q1=q1_params, q2=q2_params,
                 q1t=q1_target, q2t=q2_target, log_alpha=log_alpha,
                 policy_opt=policy_opt, q1_opt=q1_opt, q2_opt=q2_opt,
-                alpha_opt=alpha_opt, steps=total_env_steps))
+                alpha_opt=alpha_opt, steps=total_env_steps,
+                buffer=buffer.snapshot()))
 
     print(f"\nDone. Best checkpoint: success={best_success*100:.0f}%")
     eval_dist, eval_wall, eval_ped, eval_success = eval_jit(

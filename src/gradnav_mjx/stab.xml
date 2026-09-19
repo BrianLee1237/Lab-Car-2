@@ -1,82 +1,4 @@
-"""
-mjx_room_scene.py
 
-An enclosed room for MuJoCo/MJX: real 3D box walls around the perimeter
-and inside, plus human obstacles, with the same Ackermann car.
-
-mjx_car_scene builds free-floating capsule "sticks" 0.2m tall on an
-unbounded plane -- the car could simply drive out of the obstacle field,
-and most straight paths across the map hit nothing, so the lidar had
-little to perceive. Here the space is a closed room the car cannot
-leave, the walls are full-height boxes rather than low rails, and the
-humans are cylinders of roughly person size and footprint, so a lidar
-scan returns the kind of structure a real scan would.
-
-Geometry is kept axis-aligned so walls need no quaternions and so the
-2D sensing/collision math (mjx_lidar, mjx_obstacle_dist) stays exact:
-a box wall of thickness t is, in the plane, the segment along its
-centreline inflated by t/2, and a human is a circle.
-"""
-
-STEER_RANGE = 0.6  # rad; matches the steer joints' mechanical range
-
-WALL_HEIGHT = 1.0       # m, full height -- tall enough to block the lidar
-WALL_THICKNESS = 0.15   # m, full thickness
-HUMAN_RADIUS = 0.25     # m, body radius (~0.5m shoulder width)
-HUMAN_HEIGHT = 1.70     # m
-
-
-def build_room_scene_xml(walls, humans, out_path="mjx_room_scene.xml",
-                          room_half=8.0, floor_pad=2.0):
-    """walls: list of (x1, y1, x2, y2, half_thickness) axis-aligned segments.
-    humans: list of (x, y, radius)."""
-    geoms = ""
-
-    for i, (x1, y1, x2, y2, r) in enumerate(walls):
-        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-        hx = max(abs(x2 - x1) / 2.0, r)
-        hy = max(abs(y2 - y1) / 2.0, r)
-        geoms += (
-            f'    <geom name="wall_{i}" type="box" '
-            f'size="{hx:.4f} {hy:.4f} {WALL_HEIGHT/2:.4f}" '
-            f'pos="{cx:.4f} {cy:.4f} {WALL_HEIGHT/2:.4f}" '
-            f'rgba="0.55 0.55 0.60 1"/>\n'
-        )
-
-    # Humans are MOCAP bodies, walked kinematically by writing
-    # data.mocap_pos each step.
-    #
-    # Their geoms do NOT collide (contype/conaffinity 0). A mocap body is
-    # kinematic and therefore effectively infinite-mass, so any contact
-    # imparts an unbounded impulse to the car. A trajectory trace caught
-    # exactly that: the car launched to 4.9-7.6 m/s (calibrated top speed
-    # ~3.5-3.9) and in one episode shoved clean through the perimeter to
-    # y=+9.78 in a room whose wall sits at y=+8.0. Driving full-throttle
-    # past moving people reached 43 m/s and |y|=215. That accounted for
-    # the ~25/30 wall hits and near-zero success -- the car was being
-    # thrown around, not failing to steer.
-    #
-    # People remain full obstacles where it matters: the lidar sees them
-    # and the reward's safety term penalises approaching them, so
-    # avoidance is still learned -- a pedestrian just can no longer
-    # catapult the car.
-    #
-    # Capsules, not cylinders: MJX has no cylinder-box collision, and a
-    # vertical capsule presents the same circular footprint to a planar
-    # lidar anyway.
-    for i, (hx_, hy_, hr) in enumerate(humans):
-        half_h = HUMAN_HEIGHT * 0.39          # capsule half-length
-        geoms += (
-            f'    <body name="human_{i}" mocap="true" '
-            f'pos="{hx_:.4f} {hy_:.4f} {half_h + hr:.4f}">\n'
-            f'      <geom name="human_geom_{i}" type="capsule" '
-            f'size="{hr:.3f} {half_h:.3f}" rgba="0.85 0.55 0.35 1" '
-            f'contype="0" conaffinity="0"/>\n'
-            f'    </body>\n'
-        )
-
-    floor = room_half + floor_pad
-    xml = f"""
 <mujoco model="ackermann_car_room">
   <compiler angle="radian"/>
   <option timestep="0.002" gravity="0 0 -9.81" iterations="4" cone="pyramidal"/>
@@ -88,14 +10,31 @@ def build_room_scene_xml(walls, humans, out_path="mjx_room_scene.xml",
 
   <worldbody>
     <light name="ceiling" pos="0 0 6" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
-    <geom name="floor" type="plane" size="{floor} {floor} 0.1" rgba="0.32 0.33 0.35 1"/>
-{geoms}
+    <geom name="floor" type="plane" size="10.0 10.0 0.1" rgba="0.32 0.33 0.35 1"/>
+    <geom name="wall_0" type="box" size="8.0000 0.0750 0.5000" pos="0.0000 -8.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_1" type="box" size="8.0000 0.0750 0.5000" pos="0.0000 8.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_2" type="box" size="0.0750 8.0000 0.5000" pos="-8.0000 0.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_3" type="box" size="0.0750 8.0000 0.5000" pos="8.0000 0.0000 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_4" type="box" size="1.5323 0.0750 0.5000" pos="1.7863 -3.3478 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_5" type="box" size="2.0241 0.0750 0.5000" pos="-4.4759 -2.3741 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_6" type="box" size="0.0750 1.1705 0.5000" pos="-4.5069 4.2286 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <geom name="wall_7" type="box" size="2.2076 0.0750 0.5000" pos="1.3974 1.7549 0.5000" rgba="0.55 0.55 0.60 1"/>
+    <body name="human_0" mocap="true" pos="5.4001 6.0119 0.9130">
+      <geom name="human_geom_0" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1"/>
+    </body>
+    <body name="human_1" mocap="true" pos="2.5109 4.2237 0.9130">
+      <geom name="human_geom_1" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1"/>
+    </body>
+    <body name="human_2" mocap="true" pos="-0.9062 -3.5461 0.9130">
+      <geom name="human_geom_2" type="capsule" size="0.250 0.663" rgba="0.85 0.55 0.35 1"/>
+    </body>
+
     <body name="chassis" pos="0 0 0.1">
       <freejoint name="chassis_free"/>
       <geom name="chassis_geom" type="capsule" size="0.09" fromto="-0.15 0 0 0.15 0 0" mass="3.0" rgba="0.8 0.1 0.1 1"/>
 
       <body name="wheel_fl" pos="0.1483 0.115 -0.05">
-        <joint name="steer_fl" type="hinge" axis="0 0 1" range="-{STEER_RANGE} {STEER_RANGE}" limited="true" damping="1.0"/>
+        <joint name="steer_fl" type="hinge" axis="0 0 1" range="-0.6 0.6" limited="true" damping="1.0"/>
         <geom name="knuckle_fl_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fl_spin">
           <joint name="spin_fl" type="hinge" axis="0 1 0" damping="0.001"/>
@@ -103,7 +42,7 @@ def build_room_scene_xml(walls, humans, out_path="mjx_room_scene.xml",
         </body>
       </body>
       <body name="wheel_fr" pos="0.1483 -0.115 -0.05">
-        <joint name="steer_fr" type="hinge" axis="0 0 1" range="-{STEER_RANGE} {STEER_RANGE}" limited="true" damping="1.0"/>
+        <joint name="steer_fr" type="hinge" axis="0 0 1" range="-0.6 0.6" limited="true" damping="1.0"/>
         <geom name="knuckle_fr_geom" type="sphere" size="0.01" mass="0.05" rgba="0.2 0.2 0.2 1"/>
         <body name="wheel_fr_spin">
           <joint name="spin_fr" type="hinge" axis="0 1 0" damping="0.001"/>
@@ -145,7 +84,7 @@ def build_room_scene_xml(walls, humans, out_path="mjx_room_scene.xml",
          to an angle, so a position actuator is also the more faithful
          model. ctrlrange is in radians and matches the joint range;
          callers scale their [-1,1] action by STEER_RANGE. -->
-    <position name="steer" joint="steer_fl" kp="80" ctrlrange="-{STEER_RANGE} {STEER_RANGE}" forcerange="-20 20"/>
+    <position name="steer" joint="steer_fl" kp="80" ctrlrange="-0.6 0.6" forcerange="-20 20"/>
     <!-- Root cause of the car's earlier crawl-speed (~0.11-0.21 m/s):
          the <default><joint damping="0.05"/></default> block applied to
          EVERY joint, including the drive wheels' spin joints -- so the
@@ -168,7 +107,3 @@ def build_room_scene_xml(walls, humans, out_path="mjx_room_scene.xml",
     <motor name="throttle_rr" joint="spin_rr" gear="0.78" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
-"""
-    with open(out_path, "w") as f:
-        f.write(xml)
-    return out_path
