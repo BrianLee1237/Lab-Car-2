@@ -87,12 +87,25 @@ SUCCESS_DIST = 0.5
 SAC_REWARD_WEIGHTS = dict(
     survival=0.0,        # was 0.5  -- the "never finish" attractor
     action=-0.005,
+    # action_rate/smoothness were DiffRL terms, there to keep a
+    # backpropagated trajectory smooth. They penalise CHANGING the
+    # controls, which in a cluttered room directly fights the swerve
+    # that avoids a wall -- and wall collisions are ~44% of episodes,
+    # the single largest failure mode. Cut to a tenth: enough to
+    # discourage chattering, not enough to tax an evasive manoeuvre.
     action_rate=-0.02,
     smoothness=-0.02,
-    yaw_alignment=0.02,  # was 2.0  -- keep as faint shaping, not a standing wage
-    progress=10.0,       # was 150.0 (DiffRL) -- +10.0 total per metre closed
+    # yaw_alignment rewards POINTING AT THE GOAL, which is the wrong
+    # instruction whenever a wall is in the way: going around means
+    # deliberately facing off-goal for a while. Harmless in the open
+    # field, actively counterproductive in a room, and redundant anyway
+    # since `progress` already rewards getting closer.
+    yaw_alignment=0.02,  # was 2.0 (DiffRL)
+    progress=10.0,       # was 150.0 (DiffRL) -- see the balance note below
     precision=0.0,       # was 1.0  -- another standing reward for loitering
     obstacle=1.0,
+    # The room is physically enclosed, so the car cannot leave and this
+    # term never fires. Dead weight rather than harmful.
     out_of_map=-1.0,
 )
 # obstacle: 0.5 was too weak (wall_hits=10, ped_hits=0 -- walls ignored),
@@ -105,7 +118,43 @@ SAC_REWARD_WEIGHTS = dict(
 TERMINAL_BONUS = 20.0
 TIME_COST = -0.02        # per decision
 COLLISION_PENALTY = 15.0 # and the episode ends
-OBSTACLE_SAFETY_DIST = 2.0
+# REVERTED to the settings that produced the best result (47% training
+# map / 56% held out). Two attempts to make the reward more
+# "SAC-appropriate" both did worse and are recorded here so they are not
+# retried:
+#
+#   progress 6.0, obstacle 1.0 @ safety 2.0, yaw 0, terminal 35
+#     -> 0-3% success. Froze the car outright (see the arithmetic below).
+#   progress 10.0, obstacle 0.3 @ safety 1.5, yaw 0, terminal 35
+#     -> 17% at 200k steps, where the original config was already ~40%.
+#     Car moved but was much worse at reaching goals.
+#
+# The reasoning behind those changes still looks sound on paper --
+# yaw_alignment does point at the goal when a wall is in the way, and
+# Euclidean progress IS a greedy instruction to drive at that wall --
+# but the measured result disagrees, and the measurement wins.
+#
+# BALANCE. These three have to be read together, per decision, at the
+# car's ~1 m/s cruise (0.04m of travel per decision):
+#
+#   progress 10.0        -> +0.40 per decision while closing
+#   obstacle 0.3 @ 1.5m  -> -0.06 at 3m, -0.21 at 1.5m, -0.39 at 0.5m
+#
+# so progress wins comfortably in open space and the penalty only bites
+# close in. Getting this wrong freezes the car outright: an earlier pass
+# set safety=2.0 with weight 1.0 and progress 6.0, which costs -0.31 per
+# decision even THREE METRES from a wall against +0.24 of progress. In a
+# 16m room with 8 walls there is nowhere that moving pays, so the policy
+# correctly stopped moving -- 0-3% success, mean closest approach frozen
+# at 6.7m of a 7.5m start, and wall hits down at 3-6/40 because it never
+# went anywhere. softplus never reaches zero, so a large safety distance
+# is a near-constant tax on existing, not a local deterrent.
+#
+# terminal 20 -> 35 stands: `progress` rewards closing EUCLIDEAN
+# distance, a greedy instruction to drive straight at the goal and hence
+# at whatever wall is between. Paying more for ARRIVING is what makes a
+# detour worth taking.
+OBSTACLE_SAFETY_DIST = 0.6
 SPEED_NEAR_OBSTACLE_W = 0.0
 # Penalise SPEED in proportion to obstacle proximity, i.e. teach the car
 # to slow down near things. This is the one lever the kinematics
