@@ -105,6 +105,31 @@ SAC_REWARD_WEIGHTS = dict(
 TERMINAL_BONUS = 20.0
 TIME_COST = -0.02        # per decision
 COLLISION_PENALTY = 15.0 # and the episode ends
+OBSTACLE_SAFETY_DIST = 2.0
+SPEED_NEAR_OBSTACLE_W = 0.0
+# Penalise SPEED in proportion to obstacle proximity, i.e. teach the car
+# to slow down near things. This is the one lever the kinematics
+# actually give it: the measured turning radius is ~1.5-1.9m at full
+# speed but ~0.6m when slow, so arriving at a wall slowly is the
+# difference between being able to turn away and being committed. The
+# hand-written controller that reached 97% in the open field did
+# exactly this (throttle scaled by how well it was aimed); nothing in
+# the reward asked the policy to.
+#
+# DEFAULT 0.0: tried at 0.15 and it did not work -- success fell 46% ->
+# 38% and mean closest approach rose 3.01 -> 3.89m while wall hits
+# stayed flat at ~19-20/50. It simply made the car slower without
+# making it safer, so the mechanism is kept behind a flag rather than
+# enabled. Reward shaping has plateaued here; see the note below.
+# jax_reward defaults this to 0.6m, which is far inside what this car
+# can actually act on. A crash diagnostic on the 47% policy found the
+# car hits walls at only 1.18 m/s (max 2.26) while the forward lidar
+# had been reading 1.35m for several decisions -- it SEES the wall with
+# over a second of warning and drives in anyway. The reason is
+# kinematic: the measured minimum turning radius is ~1.5-1.9m at speed,
+# so once a wall is inside 0.6m -- the first point at which the old
+# penalty existed at all -- steering away is physically impossible. The
+# safety gradient has to start outside the turning radius, hence 2.0m.
 # Hitting a wall now TERMINATES the episode. Without that the car just
 # stayed pinned against the wall it hit -- a trace showed it stuck at
 # one position for the last 100 of 300 decisions at full throttle and
@@ -351,7 +376,8 @@ def build_obs_sac(data, goal, walls, peds, prev_action, prev_prev_action,
 
 def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_dist, max_dist,
                       gamma, fresh_data, action_repeat, goal_cone, arena_size, goal_bound,
-                      ped_params=None, ped_z=0.0, phys_dt=0.002):
+                      ped_params=None, ped_z=0.0, phys_dt=0.002,
+                      speed_near_obstacle_w=SPEED_NEAR_OBSTACLE_W):
     """states: dict of batched arrays (leading dim N_ENVS):
        data (mjx.Data pytree), goal (N,2), prev_action (N,2),
        prev_prev_action (N,2), step_count (N,)
@@ -422,6 +448,7 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
             jnp.array([x2, y2]), theta2, action, prev_action_i, prev_prev_action_i,
             goal_i, obstacle_d2, prev_goal_dist,
             arena_size=arena_size,
+            obstacle_safety_dist=OBSTACLE_SAFETY_DIST,
             weights=SAC_REWARD_WEIGHTS,
         )
 
@@ -438,9 +465,12 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         # zeroing the bootstrap on success makes reaching the goal a pure
         # loss of future value, so the optimal policy is to approach and
         # then never touch it. See SAC_REWARD_WEIGHTS.
+        speed2 = jnp.sqrt(new_data.qvel[0] ** 2 + new_data.qvel[1] ** 2)
+        proximity = jax.nn.softplus(OBSTACLE_SAFETY_DIST - jnp.min(obstacle_d2))
         reward = (reward + TIME_COST
                    + jnp.where(success, TERMINAL_BONUS, 0.0)
-                   - jnp.where(crashed, COLLISION_PENALTY, 0.0))
+                   - jnp.where(crashed, COLLISION_PENALTY, 0.0)
+                   - speed_near_obstacle_w * speed2 * proximity)
 
         spawn, yaw, new_goal_sample = sample_spawn_and_goal(
             goal_key_i, walls, min_dist, max_dist, goal_cone, goal_bound
@@ -795,6 +825,9 @@ def main():
                          help="room half-extent (m); 8.0 = a 16x16m room")
     parser.add_argument("--n-inner", type=int, default=4,
                          help="interior walls inside the room")
+    parser.add_argument("--speed-penalty", type=float, default=SPEED_NEAR_OBSTACLE_W,
+                         help="penalty on speed scaled by obstacle proximity; "
+                              "teaches slowing down so the car can actually turn")
     parser.add_argument("--obstacle-weight", type=float, default=1.0,
                          help="weight of the reward safety term; the room's "
                               "remaining failures are wall collisions")
@@ -863,7 +896,7 @@ def main():
         lambda policy_params, states, key, min_dist, max_dist: env_step_batched(
             policy_params, mjx_model, walls, states, key, args.horizon, min_dist, max_dist,
             args.gamma, fresh_data, args.action_repeat, args.goal_cone, arena_size,
-            goal_bound, ped_params, ped_z
+            goal_bound, ped_params, ped_z, 0.002, args.speed_penalty
         )
     )
     sac_update_jit = jax.jit(
