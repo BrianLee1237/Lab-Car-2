@@ -13,17 +13,43 @@ of `train_sac.py` for why, in detail.
 
 ### Room: enclosed 16x16m, walls + walking people, 5-10m goals
 
+Run this as four legs, raising `--total-steps` each time and keeping
+everything else identical. Each leg resumes from `room.pkl`:
+
 ```bash
-python -u train_sac.py --room --room-size 8.0 --n-inner 4 --n-humans 3 \
+BASE="--room --room-size 8.0 --n-inner 4 --n-humans 3 \
   --spawn-half 6.5 --min-dist 5.0 --max-dist 10.0 \
-  --obstacle-weight 2.0 \
-  --total-steps 400000 --horizon 300 --n-envs 16 \
+  --obstacle-weight 2.0 --horizon 300 --n-envs 16 \
   --warmup-steps 500 --eval-every 20000 --eval-n 40 \
-  --seed 51 --ckpt room.pkl --resume
+  --seed 51 --ckpt room.pkl --resume"
+
+python -u train_sac.py $BASE --total-steps 60000
+python -u train_sac.py $BASE --total-steps 160000
+python -u train_sac.py $BASE --total-steps 300000
+python -u train_sac.py $BASE --total-steps 400000
 ```
 
 Expect roughly: 23% at 60k steps, 40% at 120k, ~50% by 300k. It
 plateaus around 45-55%.
+
+**The legs are not optional, and a single 400k run is not equivalent.**
+The curriculum is paced against `--total-steps`:
+
+    progress = min(1.0, total_env_steps / (total_steps * 0.7))
+
+so the goal range only reaches the full `--min-dist`..`--max-dist` at
+70% of `--total-steps`, while the eval *always* scores the full target
+band. Launch one run at `--total-steps 400000` and at 60k it is still
+training on ~1.8-4.1m goals but being graded on 5-10m ones -- it
+reports ~5-8%, not 23%, and looks broken when it is merely early. The
+numbers above came from the original chained run, where each leg's
+curriculum completed within that leg. An earlier version of this file
+gave the single-command form with the chained milestones, which do not
+correspond.
+
+If you would rather run one continuous job, that is fine -- but read
+the eval against `goal_range` in the same log line, and do not expect
+these milestones until well past 280k steps.
 
 `--resume` is safe to pass on a fresh run (it simply finds no
 checkpoint). Re-running the same command after an interruption picks up
