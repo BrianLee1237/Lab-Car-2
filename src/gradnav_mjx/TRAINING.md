@@ -13,28 +13,43 @@ of `train_sac.py` for why, in detail.
 
 ### Room: enclosed 16x16m, walls + walking people, 5-10m goals
 
-Run this as four legs, raising `--total-steps` each time and keeping
-everything else identical. Each leg resumes from `room.pkl`:
+Run this as four legs, raising `--total-steps` each time. Each leg
+resumes the previous one's checkpoint:
 
 ```bash
-BASE="--room --room-size 8.0 --n-inner 4 --n-humans 3 \
-  --spawn-half 6.5 --min-dist 5.0 --max-dist 10.0 \
-  --horizon 300 --n-envs 16 \
-  --warmup-steps 500 --eval-every 20000 --eval-n 40 \
-  --seed 51 --ckpt room.pkl --resume"
+CFG="--room --room-size 8.0 --n-inner 4 --n-humans 3 --spawn-half 6.5 \
+  --min-dist 5.0 --max-dist 10.0 --horizon 300 --n-envs 16 \
+  --warmup-steps 500 --seed 51"
 
-python -u train_sac.py $BASE --total-steps 60000
-python -u train_sac.py $BASE --total-steps 160000
-python -u train_sac.py $BASE --total-steps 300000
-python -u train_sac.py $BASE --obstacle-weight 2.0 --total-steps 400000
+rm -f /tmp/room5.pkl
+python -u train_sac.py $CFG --total-steps 60000  --eval-every 5000  --eval-n 30 --ckpt /tmp/room5.pkl --resume
+python -u train_sac.py $CFG --total-steps 160000 --eval-every 10000 --eval-n 30 --ckpt /tmp/room5.pkl --resume
+python -u train_sac.py $CFG --total-steps 300000 --eval-every 20000 --eval-n 40 --ckpt /tmp/room5.pkl --resume
+
+cp /tmp/room5.pkl /tmp/room_obs2.pkl
+python -u train_sac.py $CFG --total-steps 400000 --eval-every 20000 --eval-n 40 \
+  --obstacle-weight 2.0 --ckpt /tmp/room_obs2.pkl --resume
+
+cp sac_policy_best.npz sac_policy_room_best.npz
 ```
 
-Note `--obstacle-weight` appears only on the LAST leg. It defaults to
-1.0, which is what the first 300k steps ran at -- the flag did not
-exist until the final leg introduced it. Raising it from the start is
-not the recipe that produced these numbers, and a heavier obstacle
-penalty early is precisely what froze the car in several of the failed
-experiments in "Things not to re-try".
+These are the literal commands of the original run, recovered from the
+session transcript -- not a reconstruction. Notes on the details:
+
+- `--obstacle-weight` is on the LAST leg only. It defaults to 1.0,
+  which is what the first 300k steps ran at; the flag did not exist
+  until that leg introduced it. Raising it from the start is not this
+  recipe, and a heavier obstacle penalty early is precisely what froze
+  the car in several of the failed experiments in "Things not to
+  re-try".
+- The leg-4 rename is only to preserve the 300k state before the
+  obstacle-weight experiment. It is the same continuous lineage: that
+  leg logs `resumed from /tmp/room_obs2.pkl at 300000 steps`.
+- `--eval-every` / `--eval-n` vary per leg. Eval cadence only; no
+  effect on training.
+- `--action-repeat`, `--batch-size` and `--updates-per-step` were never
+  passed -- defaults 20 / 256 / 1. `--warmup-steps` is 500, not the
+  default 2000.
 
 Expect roughly: 23% at 60k steps, 40% at 120k, ~50% by 300k. It
 plateaus around 45-55%.
@@ -48,21 +63,7 @@ so the goal range only reaches the full `--min-dist`..`--max-dist` at
 70% of `--total-steps`, while the eval *always* scores the full target
 band. Launch one run at `--total-steps 400000` and at 60k it is still
 training on ~1.8-4.1m goals but being graded on 5-10m ones -- it
-reports ~5-8%, not 23%, and looks broken when it is merely early. The
-numbers above came from the original chained run, where each leg's
-curriculum completed within that leg. An earlier version of this file
-gave the single-command form with the chained milestones, which do not
-correspond, and carried --obstacle-weight 2.0 on every leg.
-
-A caveat on provenance: the literal command lines for the original run
-were not saved and its logs are gone. The chaining and the obstacle
-weight are established from the commit messages of 11707a8, 7209a6d,
-26cf2dd and 65316cf and from the code at those commits. Each leg's
---total-steps is inferred from where that leg stopped, the training
-loop being `while total_env_steps < args.total_steps`. `--eval-n` was
-30 in the early legs and 40 later, which affects eval noise only. If
-leg 1 does not land near 23% at 60k, the reconstruction is wrong
-somewhere -- do not just keep chaining.
+reports ~5-8%, not 23%, and looks broken when it is merely early.
 
 If you would rather run one continuous job, that is fine -- but read
 the eval against `goal_range` in the same log line, and do not expect
