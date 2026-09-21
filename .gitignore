@@ -4,3 +4,5 @@ devel/
 *.pyc
 .catkin_workspace
 .vscode
+src/gradnav_mjx/leg*.log
+src/gradnav_mjx/room.log
