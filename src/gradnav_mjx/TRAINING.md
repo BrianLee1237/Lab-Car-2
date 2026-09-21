@@ -19,15 +19,22 @@ everything else identical. Each leg resumes from `room.pkl`:
 ```bash
 BASE="--room --room-size 8.0 --n-inner 4 --n-humans 3 \
   --spawn-half 6.5 --min-dist 5.0 --max-dist 10.0 \
-  --obstacle-weight 2.0 --horizon 300 --n-envs 16 \
+  --horizon 300 --n-envs 16 \
   --warmup-steps 500 --eval-every 20000 --eval-n 40 \
   --seed 51 --ckpt room.pkl --resume"
 
 python -u train_sac.py $BASE --total-steps 60000
 python -u train_sac.py $BASE --total-steps 160000
 python -u train_sac.py $BASE --total-steps 300000
-python -u train_sac.py $BASE --total-steps 400000
+python -u train_sac.py $BASE --obstacle-weight 2.0 --total-steps 400000
 ```
+
+Note `--obstacle-weight` appears only on the LAST leg. It defaults to
+1.0, which is what the first 300k steps ran at -- the flag did not
+exist until the final leg introduced it. Raising it from the start is
+not the recipe that produced these numbers, and a heavier obstacle
+penalty early is precisely what froze the car in several of the failed
+experiments in "Things not to re-try".
 
 Expect roughly: 23% at 60k steps, 40% at 120k, ~50% by 300k. It
 plateaus around 45-55%.
@@ -45,7 +52,17 @@ reports ~5-8%, not 23%, and looks broken when it is merely early. The
 numbers above came from the original chained run, where each leg's
 curriculum completed within that leg. An earlier version of this file
 gave the single-command form with the chained milestones, which do not
-correspond.
+correspond, and carried --obstacle-weight 2.0 on every leg.
+
+A caveat on provenance: the literal command lines for the original run
+were not saved and its logs are gone. The chaining and the obstacle
+weight are established from the commit messages of 11707a8, 7209a6d,
+26cf2dd and 65316cf and from the code at those commits. Each leg's
+--total-steps is inferred from where that leg stopped, the training
+loop being `while total_env_steps < args.total_steps`. `--eval-n` was
+30 in the early legs and 40 later, which affects eval noise only. If
+leg 1 does not land near 23% at 60k, the reconstruction is wrong
+somewhere -- do not just keep chaining.
 
 If you would rather run one continuous job, that is fine -- but read
 the eval against `goal_range` in the same log line, and do not expect
