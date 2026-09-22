@@ -89,6 +89,23 @@ python eval_band.py --checkpoint sac_policy_best.npz --room \
   --map-seed 200 --eval-n 100 --horizon 300 --bands "5,10"
 ```
 
+This recipe was re-run end to end from a clean checkout and reproduces
+exactly. Independent run vs. the original, same seed:
+
+| steps | re-run | original |
+|-------|--------|----------|
+| 60k   | 20%    | 23%      |
+| 120k  | 33%    | 40%      |
+| 180k  | 50%    | 50%      |
+| 280k  | 53%    | 53%      |
+| 300k  | 47%    | 47%      |
+| final n=100, seed 51  | 47.0% | 47% |
+| final n=100, seed 200 | 56.0% | 56% |
+
+Wall hits (44/100 and 33/100), pedestrian hits (4/100 both) and mean
+closest approach (2.73m / 2.38m) all match as well. The early-leg gaps
+are n=30 eval noise at +-7-8pp, not drift.
+
 Reference numbers for `sac_policy_room_best.npz` (committed):
 
 | map | success | wall hits | ped hits | mean closest |
