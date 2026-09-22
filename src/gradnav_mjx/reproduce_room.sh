@@ -18,9 +18,15 @@ CFG="--room --room-size 8.0 --n-inner 4 --n-humans 3 --spawn-half 6.5
      --min-dist 5.0 --max-dist 10.0 --horizon 300 --n-envs 16
      --warmup-steps 500 --seed 51"
 
-if pgrep -f train_sac.py > /dev/null; then
+# Match only real python invocations. A bare "train_sac.py" pattern
+# also matches any shell, pgrep or tail whose command line merely
+# mentions the file -- including a watcher in another terminal -- and
+# would refuse to start for no reason. The [p] keeps this pgrep from
+# matching itself.
+if pgrep -f "[p]ython.*train_sac\.py" > /dev/null; then
   echo "ERROR: train_sac.py is already running. Legs share a checkpoint" >&2
-  echo "and will corrupt each other. Stop it first:  pkill -f train_sac.py" >&2
+  echo "and will corrupt each other. Stop it first:" >&2
+  echo "  pkill -f 'python.*train_sac'" >&2
   exit 1
 fi
 
