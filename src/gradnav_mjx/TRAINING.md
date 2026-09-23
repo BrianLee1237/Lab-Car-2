@@ -52,7 +52,8 @@ session transcript -- not a reconstruction. Notes on the details:
   default 2000.
 
 Expect roughly: 23% at 60k steps, 40% at 120k, ~50% by 300k. It
-plateaus around 45-55%.
+plateaus around 45-55% on this machine; see the cross-machine note
+below before treating that band as guaranteed.
 
 **The legs are not optional, and a single 400k run is not equivalent.**
 The curriculum is paced against `--total-steps`:
@@ -105,6 +106,16 @@ exactly. Independent run vs. the original, same seed:
 Wall hits (44/100 and 33/100), pedestrian hits (4/100 both) and mean
 closest approach (2.73m / 2.38m) all match as well. The early-leg gaps
 are n=30 eval noise at +-7-8pp, not drift.
+
+**That holds on the same machine, not across machines.** The same
+checkout and the same --seed 51 run on an M-series Mac gave 13.3% at
+60k (vs 20% here) and finished at 34% / 39%. JAX floating point
+differs between ARM and x86, and RL training compounds small
+differences through the replay buffer, so a seed pins a run down on one
+platform only; elsewhere it is effectively a fresh draw. Plan on
+running a few seeds and keeping the best by an n=100 score, and treat
+the committed `sac_policy_room_best.npz` as the reference result rather
+than something a single retrain is guaranteed to match.
 
 Reference numbers for `sac_policy_room_best.npz` (committed):
 

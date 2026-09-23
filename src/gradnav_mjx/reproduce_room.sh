@@ -7,8 +7,16 @@
 # the full 5-10m band, so it reads ~5-8% and looks broken when it is
 # only early. See TRAINING.md.
 #
-# Takes several hours. Safe to re-run: each leg resumes its checkpoint,
-# so if you interrupt it, run the script again and it picks up.
+# Takes several hours. By default each run starts clean; to resume an
+# interrupted run instead, re-run it with FRESH=0.
+#
+# NOTE ON REPRODUCIBILITY: --seed 51 fixes the run on ONE machine. JAX
+# floating point differs across platforms (an ARM Mac vs x86 Linux),
+# and RL training compounds tiny differences, so the same seed on
+# different hardware is effectively a different draw. Measured: this
+# recipe gives 47%/56% on x86 Linux and 34%/39% on an M-series Mac from
+# an identical checkout and seed. Expect to try a few seeds and keep
+# the best, scored at n=100.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -38,6 +46,16 @@ leg () {  # leg <n> <total-steps> <eval-every> <eval-n> <ckpt> [extra...]
     --eval-n "$evn" --ckpt "$ck" --resume "$@" 2>&1 | tee "leg$n.log" \
     | grep -vE "Failed to import|^$"
 }
+
+# A leftover checkpoint would make leg 1 resume instead of starting
+# fresh, so "run it again for a clean reproduction" would silently
+# continue the previous run. FRESH=0 opts out, to resume an interrupted
+# run rather than restart it.
+if [ "${FRESH:-1}" = "1" ]; then
+  rm -f "$CKPT" "$CKPT4"
+else
+  echo "FRESH=0: resuming any existing checkpoint at $CKPT"
+fi
 
 leg 1  60000  5000 30 "$CKPT"
 leg 2 160000 10000 30 "$CKPT"
