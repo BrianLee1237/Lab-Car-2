@@ -33,6 +33,13 @@ python -u train_sac.py $CFG --total-steps 400000 --eval-every 20000 --eval-n 40 
 cp sac_policy_best.npz sac_policy_room_best.npz
 ```
 
+`reproduce_room.sh` runs exactly this. `SEED=52 ./reproduce_room.sh`
+runs another seed; every checkpoint, log and saved policy is scoped by
+seed, so seeds can be run back to back and compared. Given the
+cross-machine variance noted below, running two or three and keeping
+the best by an n=100 score is the realistic way to get a good policy on
+your own hardware.
+
 These are the literal commands of the original run, recovered from the
 session transcript -- not a reconstruction. Notes on the details:
 
