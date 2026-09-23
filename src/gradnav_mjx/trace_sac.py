@@ -11,8 +11,9 @@ mjx_solver_patch.apply()
 
 from mjx_car_scene import STEER_RANGE
 from jax_sac_networks import deterministic_action
-from train_diffmjx_final import get_car_xy_heading, QVEL_CLAMP
-from train_sac import build_obs_sac, make_env, N_LIDAR, _peds_at, _move_peds
+from train_diffmjx_final import get_car_xy_heading, QVEL_CLAMP, wall_distances
+from train_sac import (build_obs_sac, make_env, N_LIDAR, _peds_at, _move_peds,
+                       reset_data_at, CAR_RADIUS, SUCCESS_DIST)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", default="sac_policy_best.npz")
@@ -25,6 +26,17 @@ parser.add_argument("--room-size", type=float, default=8.0)
 parser.add_argument("--n-inner", type=int, default=6)
 parser.add_argument("--n-humans", type=int, default=6)
 parser.add_argument("--max-dist", type=float, default=10.0)
+# Fixed start and goal. Training deliberately randomises both (see
+# sample_spawn_and_goal in train_sac.py) so the policy cannot memorise
+# one layout, but a demo or a specific "does it handle THIS situation"
+# test needs to pin them down.
+parser.add_argument("--start", type=float, nargs=2, metavar=("X", "Y"),
+                     default=None, help="start position; default 0 0")
+parser.add_argument("--start-yaw", type=float, default=0.0,
+                     help="start heading in radians; 0 faces +x")
+parser.add_argument("--goal", type=float, nargs=2, metavar=("X", "Y"),
+                     default=None,
+                     help="goal position. Omit to run the built-in sweep.")
 args = parser.parse_args()
 
 env = make_env(args.map_seed, room=args.room, room_size=args.room_size,
@@ -55,21 +67,42 @@ def step_fn(data, goal, prev_action, prev_prev_action, prev_scan, i):
 
     data, _ = jax.lax.scan(repeat_body, data,
                             jnp.arange(args.action_repeat, dtype=jnp.float32))
-    return data, x, y, theta, action, scan
+    x2, y2, _ = get_car_xy_heading(data)
+    clear = jnp.min(wall_distances(jnp.array([x2, y2]), walls))
+    return data, x, y, theta, action, scan, clear
 
-goals = {"1m": (0.9, 0.3), "2m": (1.8, 0.6), "3m": (2.7, 0.9), "4m": (3.6, 1.2), "6m": (5.4, 1.8)}
+start = jnp.array(args.start if args.start else [0.0, 0.0])
+fresh = mjx.make_data(mjx_model)
+
+if args.goal:
+    goals = {f"({args.goal[0]:g},{args.goal[1]:g})": tuple(args.goal)}
+else:
+    goals = {"1m": (0.9, 0.3), "2m": (1.8, 0.6), "3m": (2.7, 0.9),
+             "4m": (3.6, 1.2), "6m": (5.4, 1.8)}
 
 for name, (gx, gy) in goals.items():
     goal = jnp.array([gx, gy])
-    data = mjx.make_data(mjx_model)
+    # reset_data_at places the chassis and heading, matching exactly how
+    # training resets an episode -- so a fixed-start trace is comparable
+    # to what the policy saw while learning.
+    data = reset_data_at(fresh, start, jnp.array(args.start_yaw))
     prev_action = jnp.zeros(2)
     prev_prev_action = jnp.zeros(2)
     prev_scan = jnp.ones(N_LIDAR)
-    closest = float(jnp.sqrt(gx ** 2 + gy ** 2))
-    print(f"\n=== Goal: {name}  xy=({gx}, {gy}) ===")
+    crash_t = None
+    sx, sy = float(start[0]), float(start[1])
+    closest = float(np.hypot(gx - sx, gy - sy))
+    print(f"\n=== start=({sx:g},{sy:g}) yaw={args.start_yaw:g}  "
+          f"goal {name}=({gx:g},{gy:g})  dist={closest:.2f}m ===")
     for t in range(args.horizon):
-        data, x, y, theta, action, prev_scan = step_fn(
+        data, x, y, theta, action, prev_scan, clear = step_fn(
             data, goal, prev_action, prev_prev_action, prev_scan, float(t))
+        # Training and eval END the episode on contact. Without this the
+        # trace grinds against a wall at full throttle for the remaining
+        # decisions and reports only a poor closest-approach, which reads
+        # as "navigated badly" rather than "crashed at t=97".
+        if crash_t is None and float(clear) < CAR_RADIUS:
+            crash_t = t
         prev_prev_action, prev_action = prev_action, action
         gd = float(jnp.sqrt((gx - x) ** 2 + (gy - y) ** 2))
         closest = min(closest, gd)
@@ -77,4 +110,10 @@ for name, (gx, gy) in goals.items():
             v = float(jnp.linalg.norm(data.qvel[:2]))
             print(f"  t={t:4d}  pos=({float(x):+.3f},{float(y):+.3f})  theta={float(theta):+.2f}  "
                   f"v={v:.3f}  steer={float(action[0]):+.2f}  throttle={float(action[1]):+.2f}  goal_dist={gd:.3f}")
-    print(f"  -> closest approach {closest:.3f}  ({'SUCCESS' if closest < 0.5 else 'FAIL'})")
+    if closest < SUCCESS_DIST:
+        verdict = "SUCCESS"
+    elif crash_t is not None:
+        verdict = f"CRASHED into a wall at t={crash_t}"
+    else:
+        verdict = "FAIL (no crash -- ran out of time or stalled)"
+    print(f"  -> closest approach {closest:.3f}  ({verdict})")
