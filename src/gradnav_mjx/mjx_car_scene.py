@@ -53,6 +53,34 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
     </body>
   </worldbody>
 
+
+  <contact>
+    <!-- The chassis capsule (radius 0.09) overlaps the FRONT wheel
+         capsules by 34mm: nearest approach 0.106 against a combined
+         radius of 0.14. MuJoCo skips parent-child collisions, and the
+         rear wheels ARE direct children of the chassis, so they are
+         excluded automatically. The front wheels sit one level deeper
+         (chassis -> wheel_fl -> wheel_fl_spin) to carry the steering
+         hinge, so they are NOT parent-child and collided.
+
+         Measured cost: ~150 N of normal force at EACH front wheel,
+         against ~4 N at each wheel-floor contact, i.e. the car was
+         driving with its own front wheels clamped in a vice. With
+         friction 2.0 that is a constant brake the drivetrain had to
+         overcome before moving at all, which made ~60% of the throttle
+         range inert (everything below 0.7 produced under 0.22 m/s,
+         then 0.8 jumped to 2.2). The policy therefore had effectively
+         binary throttle while its reward penalised large actions --
+         pushing it into exactly the region that does nothing.
+
+         This is invisible in a rollout: the car drives, just badly. It
+         was found by listing contact forces, after damping, solver
+         iterations, friction cone, gear ratio, rolling friction and
+         the qvel clamp had each been ruled out. -->
+    <exclude body1="chassis" body2="wheel_fl_spin"/>
+    <exclude body1="chassis" body2="wheel_fr_spin"/>
+  </contact>
+
   <equality>
     <joint joint1="steer_fl" joint2="steer_fr"/>
   </equality>
