@@ -1,5 +1,37 @@
 # Training the SAC car policy
 
+> **The numbers in this file predate a physics fix (068e8d1) and no
+> longer describe this simulator.** The chassis was colliding with its
+> own front wheels, ~150N per wheel against ~4N of wheel-floor contact,
+> which braked the car so hard that ~60% of the throttle range produced
+> under 0.22 m/s. Every result below was trained against that.
+>
+> What is known after the fix:
+>
+> | | before | after |
+> |---|---|---|
+> | `sac_policy_room_best.npz`, seed 51, n=100 | 47% | **55%** |
+> | mean closest approach | 2.73m | **2.06m** |
+> | wall hits | 44/100 | 59/100 |
+>
+> That is the SAME policy, unchanged -- it gains 8pp purely from being
+> able to move at commanded speed. It also crashes more, driving faster
+> into the same walls with reflexes tuned for a slower car.
+>
+> Treat everything below as history, in particular:
+>
+> - The reference policy is stale. It was never trained to use throttle
+>   below 0.7, because below 0.7 nothing happened.
+> - **"Things not to re-try" is suspect.** Several of those experiments
+>   "froze the car", which is exactly what a heavier obstacle penalty
+>   would do by nudging throttle into a dead zone that no longer
+>   exists. Those conclusions may simply not hold now.
+> - The 45-55% plateau, and the claim that the remaining gap is purely
+>   kinematic, were both measured on the braked car.
+>
+> Retraining from scratch on the fixed physics is a genuinely different
+> experiment from any run recorded here.
+
 Everything below runs from this directory (`src/gradnav_mjx`).
 
 `train_sac.py` is the entry point. It is Soft Actor-Critic (Haarnoja et
