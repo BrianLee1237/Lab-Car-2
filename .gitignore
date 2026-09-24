@@ -6,3 +6,11 @@ devel/
 .vscode
 src/gradnav_mjx/leg*.log
 src/gradnav_mjx/room.log
+
+# Rewritten by every training run -- never a result anyone chose to
+# keep, and tracking them meant a run dirtied the repo and a stray
+# `git add -A` could commit scratch over a real one. Saved policies get
+# a durable name instead (sac_policy_room_best.npz, or _s<SEED> from
+# reproduce_room.sh).
+src/gradnav_mjx/sac_policy_best.npz
+src/gradnav_mjx/sac_policy_final.npz

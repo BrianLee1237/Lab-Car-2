@@ -148,10 +148,14 @@ per band. Generalises to unseen maps with no measurable gap.
 
 - `sac_policy_room_best.npz` — the 47%/56% room policy above. **Use
   this one.** Copied aside deliberately.
-- `sac_policy_best.npz` / `sac_policy_final.npz` — written by whatever
-  ran last, and **overwritten by every new run**. Currently they hold a
-  much weaker policy from a failed experiment. Copy anything you care
-  about to a new name.
+- `sac_policy_best.npz` / `sac_policy_final.npz` — scratch. Written by
+  whatever ran last and **overwritten by every new run**, so they are
+  gitignored and untracked: a run no longer dirties the repo, and a
+  stray `git add -A` can no longer commit scratch over a real result.
+  Copy anything you care about to a durable name.
+- `sac_policy_room_s<SEED>.npz` — what `reproduce_room.sh` saves, named
+  by seed so runs cannot clobber each other. Commit the good ones; they
+  are ~122K, small enough for git with no LFS.
 
 ## Resuming (important)
 
