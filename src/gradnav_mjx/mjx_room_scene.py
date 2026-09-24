@@ -194,12 +194,15 @@ def build_room_scene_xml(walls, humans, out_path="mjx_room_scene.xml",
          (0.75 m/s wheel-surface speed), a leftover from when speeds were
          much lower and NaN-safety was the only concern -- an open-loop
          full-throttle test now reaches 1-3 m/s, matching the real
-         MuSHR hardware's actual speed range. gear=0.78 (traction-limited
-         torque matching mu=2.0, the real MuSHR tire friction spec from
-         racecar.urdf) is unchanged and still correct -- the bottleneck
-         was never torque or grip, only this spin-joint damping. -->
-    <motor name="throttle_rl" joint="spin_rl" gear="0.78" ctrlrange="-1 1"/>
-    <motor name="throttle_rr" joint="spin_rr" gear="0.78" ctrlrange="-1 1"/>
+         MuSHR hardware's actual speed range. gear was 0.78. With the chassis/front-wheel collision fixed
+         the car was no longer fighting a ~150N brake and full throttle
+         reached 3.5 m/s, above the real MuSHR's 1-3 m/s. gear=0.50 now
+         gives 1.03 m/s at 0.1 throttle rising smoothly to 2.89 at full,
+         which matches the hardware. Lowering gear was unsafe before the
+         collision fix -- it only slid the dead zone around -- and is
+         safe now that response is monotonic. -->
+    <motor name="throttle_rl" joint="spin_rl" gear="0.50" ctrlrange="-1 1"/>
+    <motor name="throttle_rr" joint="spin_rr" gear="0.50" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
 """
