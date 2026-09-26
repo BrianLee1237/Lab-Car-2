@@ -70,7 +70,19 @@ from jax_reward import jax_reward
 
 
 CAR_RADIUS = 0.24
-QVEL_CLAMP = 40.0
+# Clipped on EVERY qvel each substep, wheel spin included. At a 0.05m
+# wheel radius, a clamp of C limits PURE ROLLING to C*0.05 m/s, so 40.0
+# capped rolling at 2.0 m/s -- and the car reached 2.89, meaning it was
+# skidding at up to 31% slip above 2 m/s, with the wheels pinned at
+# exactly 40.0 for every throttle from 0.25 up. A sliding tyre produces
+# far less lateral force than a rolling one, so cornering above 2 m/s
+# was wrong in exactly the regime the car drives in. 80.0 allows 4.0 m/s
+# of rolling, comfortably above the 3.27 m/s top speed that gear=0.15
+# gives, and measured slip is then under 1% at every throttle.
+#
+# This stays a NaN guard, just a looser one: it was already raised once
+# from 15.0 to 40.0 for the same class of symptom.
+QVEL_CLAMP = 80.0
 
 
 def adam_init(params):

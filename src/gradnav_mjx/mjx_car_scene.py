@@ -122,13 +122,17 @@ def build_car_scene_xml(walls, out_path="mjx_car_scene.xml", arena_size=8.0):
          full-throttle test now reaches 1-3 m/s, matching the real
          MuSHR hardware's actual speed range. gear was 0.78. With the chassis/front-wheel collision fixed
          the car was no longer fighting a ~150N brake and full throttle
-         reached 3.5 m/s, above the real MuSHR's 1-3 m/s. gear=0.50 now
-         gives 1.03 m/s at 0.1 throttle rising smoothly to 2.89 at full,
-         which matches the hardware. Lowering gear was unsafe before the
+         reached 3.5 m/s, above the real MuSHR's 1-3 m/s. gear=0.50 gave
+         1.03-2.89 m/s, but that ceiling came from QVEL_CLAMP pinning the
+         wheels at 40 rad/s, not from the drivetrain -- the car was
+         skidding at 31% slip at top speed. With the clamp raised to 80,
+         gear=0.15 gives 0.33-3.27 m/s with under 1% slip throughout, so
+         the speed limit is now the drivetrain and the wheels genuinely
+         roll. Lowering gear was unsafe before the
          collision fix -- it only slid the dead zone around -- and is
          safe now that response is monotonic. -->
-    <motor name="throttle_rl" joint="spin_rl" gear="0.50" ctrlrange="-1 1"/>
-    <motor name="throttle_rr" joint="spin_rr" gear="0.50" ctrlrange="-1 1"/>
+    <motor name="throttle_rl" joint="spin_rl" gear="0.15" ctrlrange="-1 1"/>
+    <motor name="throttle_rr" joint="spin_rr" gear="0.15" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
 """
