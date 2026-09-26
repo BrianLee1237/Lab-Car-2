@@ -21,3 +21,16 @@ src/gradnav_mjx/sac_policy_final.npz
 src/gradnav_mjx/sac_room_*.xml
 src/gradnav_mjx/sac_map_*.xml
 src/gradnav_mjx/diffmjx_map_*.xml
+# The remaining generated scenes, written by the diagnostic scripts
+# (steer_check, oracle_check, stuck_check, trace_sac, eval_band, ...).
+# Same reason as above: running a diagnostic left the repo dirty.
+src/gradnav_mjx/band_map.xml
+src/gradnav_mjx/mm_*.xml
+src/gradnav_mjx/oracle_map.xml
+src/gradnav_mjx/pen_test.xml
+src/gradnav_mjx/room_check.xml
+src/gradnav_mjx/room_ped.xml
+src/gradnav_mjx/sac_trace_map.xml
+src/gradnav_mjx/stab.xml
+src/gradnav_mjx/steer_map.xml
+src/gradnav_mjx/stuck_map.xml
