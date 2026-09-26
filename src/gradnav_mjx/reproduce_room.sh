@@ -24,9 +24,19 @@ cd "$(dirname "$0")"
 # run one after another without clobbering each other's checkpoints,
 # logs or saved policy.
 SEED=${SEED:-51}
-CKPT=${CKPT:-/tmp/room_s${SEED}.pkl}
-CKPT4=${CKPT4:-/tmp/room_s${SEED}_obs2.pkl}
-CFG="--room --room-size 8.0 --n-inner 4 --n-humans 3 --spawn-half 6.5
+# Crowd density. The original runs used 3 people in a 16x16m room --
+# 0.012 people/m^2, against 0.3-1.0 in pedestrian-navigation work, so
+# pedestrians were scenery rather than the obstacle: evals showed 4-7
+# pedestrian hits per 100 episodes against 44-59 wall hits. 12 people
+# (0.047/m^2) with 2 interior walls makes people the dominant obstacle
+# while keeping the room driveable. generate_room_layout places up to 40
+# without overlaps if you want to push further; 60 starts overlapping.
+N_HUMANS=${N_HUMANS:-12}
+N_INNER=${N_INNER:-2}
+CKPT=${CKPT:-/tmp/room_s${SEED}_h${N_HUMANS}.pkl}
+CKPT4=${CKPT4:-/tmp/room_s${SEED}_h${N_HUMANS}_obs2.pkl}
+CFG="--room --room-size 8.0 --n-inner $N_INNER --n-humans $N_HUMANS
+     --spawn-half 6.5
      --min-dist 5.0 --max-dist 10.0 --horizon 300 --n-envs 16
      --warmup-steps 500 --seed $SEED"
 
@@ -45,9 +55,9 @@ fi
 leg () {  # leg <n> <total-steps> <eval-every> <eval-n> <ckpt> [extra...]
   local n=$1 tot=$2 every=$3 evn=$4 ck=$5; shift 5
   echo
-  echo "===== seed $SEED leg $n -> $tot steps  (log: leg${n}_s$SEED.log) ====="
+  echo "===== seed $SEED, $N_HUMANS people, leg $n -> $tot steps  (log: leg${n}_s${SEED}_h$N_HUMANS.log) ====="
   python -u train_sac.py $CFG --total-steps "$tot" --eval-every "$every" \
-    --eval-n "$evn" --ckpt "$ck" --resume "$@" 2>&1 | tee "leg${n}_s$SEED.log" \
+    --eval-n "$evn" --ckpt "$ck" --resume "$@" 2>&1 | tee "leg${n}_s${SEED}_h$N_HUMANS.log" \
     | grep -vE "Failed to import|^$"
 }
 
@@ -75,11 +85,11 @@ leg 4 400000 20000 40 "$CKPT4" --obstacle-weight 2.0
 # committed reference policy, and clobbering it would destroy the only
 # copy of a known-good result with whatever this run happened to
 # produce. Compare first, rename by hand if this run is better.
-OUT=sac_policy_room_s${SEED}.npz
+OUT=sac_policy_room_s${SEED}_h${N_HUMANS}.npz
 cp sac_policy_best.npz "$OUT"
 echo
 echo "===== training done. scoring $OUT at n=100 ====="
-EVAL="--checkpoint $OUT --room --n-inner 4 --n-humans 3
+EVAL="--checkpoint $OUT --room --n-inner $N_INNER --n-humans $N_HUMANS
       --spawn-half 6.5 --max-dist 10.0 --eval-n 100 --horizon 300 --bands 5,10"
 echo; echo "--- training map, seed $SEED (reference run: ~47%) ---"
 python eval_band.py $EVAL --map-seed "$SEED" 2>&1 | grep -vE "Failed to import|^$"
