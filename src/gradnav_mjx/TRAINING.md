@@ -1,45 +1,68 @@
 # Training the SAC car policy
 
-> **The numbers in this file predate a physics fix (068e8d1) and no
-> longer describe this simulator.** The chassis was colliding with its
-> own front wheels, ~150N per wheel against ~4N of wheel-floor contact,
-> which braked the car so hard that ~60% of the throttle range produced
-> under 0.22 m/s. Every result below was trained against that.
->
-> What is known after the fix:
->
-> | | before | after |
-> |---|---|---|
-> | `sac_policy_room_best.npz`, seed 51, n=100 | 47% | **55%** |
-> | mean closest approach | 2.73m | **2.06m** |
-> | wall hits | 44/100 | 59/100 |
->
-> That is the SAME policy, unchanged -- it gains 8pp purely from being
-> able to move at commanded speed. It also crashes more, driving faster
-> into the same walls with reflexes tuned for a slower car.
->
-> Treat everything below as history, in particular:
->
-> - The reference policy is stale. It was never trained to use throttle
->   below 0.7, because below 0.7 nothing happened.
-> - **"Things not to re-try" is suspect.** Several of those experiments
->   "froze the car", which is exactly what a heavier obstacle penalty
->   would do by nudging throttle into a dead zone that no longer
->   exists. Those conclusions may simply not hold now.
-> - The 45-55% plateau, and the claim that the remaining gap is purely
->   kinematic, were both measured on the braked car.
->
-> Retraining from scratch on the fixed physics is a genuinely different
-> experiment from any run recorded here.
+## Current results
 
-Everything below runs from this directory (`src/gradnav_mjx`).
+Enclosed 16x16m room, 4 perimeter + 2 interior walls, 8 walking people,
+goals 5-10m apart. Policy: `sac_policy_room_fixed_h8.npz`.
 
-`train_sac.py` is the entry point. It is Soft Actor-Critic (Haarnoja et
-al. 2018) driving an Ackermann car in MJX. It shares the car model and
-the reward *function* with the DiffRL pipeline (`train_diffmjx_final.py`)
-but not its reward weights or observation encoding — those were tuned
-for a different learner and are wrong here. See the comments at the top
-of `train_sac.py` for why, in detail.
+| map | success | wall hits | ped hits | mean closest |
+|-----|---------|-----------|----------|--------------|
+| seed 52 (trained on) | **77.0%** | 21/100 | 11/100 | 0.935m |
+| seed 200 (held out)  | **88.0%** | 21/100 | 19/100 | 0.449m |
+
+Reproduce with `SEED=52 N_HUMANS=8 N_INNER=2 ./reproduce_room.sh`.
+
+### How this compares to what this file used to say
+
+The previous reference was 47% / 56% with 3 people, and everything below
+was written against it. Both the physics and the room have changed:
+
+| | old | new |
+|---|-----|-----|
+| people in the room | 3 | 8 |
+| success, trained map | 47% | 77.0% |
+| success, held out | 56% | 88.0% |
+| wall hits | 44 / 33 per 100 | 21 / 21 |
+| mean closest approach | 2.73 / 2.38m | 0.935 / 0.449m |
+
+A 30-point gain while nearly tripling the pedestrians, and wall
+collisions halved. Matched-step comparison against the old run:
+
+| steps | old (3 people, braked) | new (8 people, fixed) |
+|-------|------------------------|-----------------------|
+| 60k   | 23% | 53% |
+| 120k  | 40% | 73% |
+| 160k  | 37% | 67% |
+
+**The ~50% plateau was a physics bug, not a limit of SAC, the reward, or
+the car's kinematics.** Two faults, both in the scene rather than the
+learner:
+
+1. The chassis capsule overlapped each FRONT wheel by 34mm, ~150N of
+   normal force per wheel against ~4N of wheel-floor contact -- the car
+   drove with its own front wheels clamped in a vice. About 60% of the
+   throttle range produced under 0.22 m/s, so the policy had effectively
+   binary throttle while the reward's action penalties pushed it toward
+   the inert region. Fixed in 068e8d1.
+2. QVEL_CLAMP=40 capped wheel spin, limiting pure rolling to 2.0 m/s, so
+   above that the car skidded at up to 31% slip and cornered wrongly in
+   the speed range it actually used. Fixed in ae3aa58.
+
+Consequences for the history below:
+
+- **"Things not to re-try" is misleading, not merely stale.** Those six
+  reward experiments were diagnosing symptoms of fault 1. Several
+  "froze the car", which is what a heavier obstacle penalty does when it
+  nudges throttle into a dead zone. The speed-penalty-near-obstacles
+  idea in particular asked the car to slow down when slowing meant
+  stopping; it is worth retrying.
+- The claim that the remaining gap was kinematic -- a 1.5-1.9m turning
+  radius leaving the car committed -- was measured on the braked car.
+  Measured turn radius is now 0.55m at 2.35 m/s, and wall hits halved.
+- `sac_policy_room_best.npz` (47%/56%) is kept for provenance only. It
+  learned to hold throttle at 0.96 because nothing else moved the car.
+
+Everything from here down predates the fixes. Read it as history.
 
 ## Reproducing the headline results
 
