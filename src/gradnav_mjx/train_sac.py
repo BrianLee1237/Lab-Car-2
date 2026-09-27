@@ -43,7 +43,7 @@ from mjx_room_scene import (build_room_scene_xml, HUMAN_HEIGHT,
                              HUMAN_RADIUS)
 from mjx_pedestrians import (make_patrol_params, pedestrian_circles,
                               pedestrian_mocap_pos)
-from mjx_obstacle_dist import wall_distances, obstacle_distances
+from mjx_obstacle_dist import wall_distances, obstacle_distances, human_distances
 from mjx_lidar import lidar_scan
 from jax_reward import jax_reward
 from jax_sac_networks import (
@@ -502,7 +502,20 @@ def env_step_batched(policy_params, mjx_model, walls, states, key, horizon, min_
         )
 
         success = goal_dist2 < SUCCESS_DIST
-        crashed = jnp.min(wall_distances(jnp.array([x2, y2]), walls)) < CAR_RADIUS
+        hit_wall = jnp.min(wall_distances(jnp.array([x2, y2]), walls)) < CAR_RADIUS
+        # Hitting a PERSON ends the episode too. It previously did not:
+        # only walls terminated, so a run that drove through somebody and
+        # then reached the goal was scored a success. In a task about
+        # navigating among people that inverts the priority -- striking a
+        # pedestrian is the most serious failure available, not a free
+        # one. The pedestrians stay non-colliding in the physics (a mocap
+        # body is kinematic, so contact imparts an unbounded impulse and
+        # was catapulting the car to 43 m/s), so this is a proximity test
+        # against their circular footprint rather than a contact event.
+        peds2 = _peds_at(t0 + decision_dt, ped_params)
+        hit_ped = (jnp.min(human_distances(jnp.array([x2, y2]), peds2)) < CAR_RADIUS
+                   if peds2 is not None else jnp.array(False))
+        crashed = hit_wall | hit_ped
         timeout = (step_count_i + 1) >= horizon
         reset = success | timeout | crashed
         # bootstrap mask: only true success zeroes future value; timeout is
@@ -682,7 +695,7 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
 
         def step(carry, i):
             (data, prev_action, prev_prev_action, prev_scan,
-             min_dist_seen, min_wall_seen, min_ped_seen) = carry
+             min_dist_seen, min_wall_seen, min_ped_seen, dead) = carry
             t0 = i * decision_dt
             obs, x, y, theta, obstacle_d, scan = build_obs_sac(
                 data, goal, walls, _peds_at(t0, ped_params, data.qpos[0:2]), prev_action,
@@ -706,7 +719,13 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
                 _peds_at(t0 + decision_dt, ped_params, data.qpos[0:2]),
                 action, prev_action, scan)
             goal_dist = jnp.sqrt((goal[0] - x2) ** 2 + (goal[1] - y2) ** 2)
-            min_dist_seen = jnp.minimum(min_dist_seen, goal_dist)
+            # Freeze progress once the episode is over. Without this the
+            # metric asked "did the car EVER get within SUCCESS_DIST",
+            # counting a run that struck a wall or a person at t=20 and
+            # then coasted to the goal as a success -- strictly more
+            # permissive than training, which terminates on collision.
+            min_dist_seen = jnp.where(dead, min_dist_seen,
+                                       jnp.minimum(min_dist_seen, goal_dist))
             # Walls and people are scored apart. A wall collision is
             # unambiguously the car's doing; a person who walks into the
             # car is not the same event, and lumping them together made
@@ -723,13 +742,18 @@ def evaluate_sac(policy_params, mjx_model, walls, horizon, n_eval, min_dist, max
                     jnp.linalg.norm(car_xy2[None, :] - peds2[:, :2], axis=-1)
                     - peds2[:, 2])
             min_ped_seen = jnp.minimum(min_ped_seen, ped_clear)
+            # A collision of either kind ends the episode, as in training.
+            dead = (dead
+                    | (jnp.min(wall_distances(car_xy2, walls)) < CAR_RADIUS)
+                    | (ped_clear < CAR_RADIUS))
             return (data, action, prev_action, scan2,
-                    min_dist_seen, min_wall_seen, min_ped_seen), None
+                    min_dist_seen, min_wall_seen, min_ped_seen, dead), None
 
         init_dist = jnp.sqrt((goal[0] - spawn[0]) ** 2 + (goal[1] - spawn[1]) ** 2)
         carry0 = (data, jnp.zeros(2), jnp.zeros(2), jnp.ones(N_LIDAR),
-                  init_dist, jnp.array(jnp.inf), jnp.array(jnp.inf))
-        (data, _, _, _, min_dist_seen, min_wall, min_ped), _ = jax.lax.scan(
+                  init_dist, jnp.array(jnp.inf), jnp.array(jnp.inf),
+                  jnp.array(False))
+        (data, _, _, _, min_dist_seen, min_wall, min_ped, _), _ = jax.lax.scan(
             step, carry0, jnp.arange(horizon, dtype=jnp.float32)
         )
         return min_dist_seen, min_wall, min_ped

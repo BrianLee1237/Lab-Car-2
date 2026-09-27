@@ -7,8 +7,23 @@ goals 5-10m apart. Policy: `sac_policy_room_fixed_h8.npz`.
 
 | map | success | wall hits | ped hits | mean closest |
 |-----|---------|-----------|----------|--------------|
-| seed 52 (trained on) | **77.0%** | 21/100 | 11/100 | 0.935m |
-| seed 200 (held out)  | **88.0%** | 21/100 | 19/100 | 0.449m |
+| seed 52 (trained on) | **69.0%** | 21/100 | 11/100 | 1.314m |
+| seed 200 (held out)  | **69.0%** | 21/100 | 19/100 | 1.346m |
+
+Scored with the episode ending at the FIRST collision, wall or person,
+so a success is a clean arrival. An earlier version of these numbers read
+77% / 88% because the evaluation ran the full horizon and asked only
+"did the car ever come within SUCCESS_DIST of the goal", which counted a
+run that struck a wall or a pedestrian and then coasted to the goal as a
+success -- strictly more permissive than training. The held-out map lost
+the most (88 -> 69) because more of its pedestrians sit in the car's
+path (19 hits per 100 against 11), so the apparent generalisation
+advantage was largely an artifact of the metric. Both maps now score the
+same, i.e. no gap in either direction.
+
+The older 47% / 56% reference was measured under that same permissive
+metric and has NOT been re-scored strictly, so it is not directly
+comparable to the numbers above.
 
 Reproduce with `SEED=52 N_HUMANS=8 N_INNER=2 ./reproduce_room.sh`.
 
